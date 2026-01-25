@@ -20,17 +20,17 @@ SELECT
     ROUND(AVG(
         CASE 
             WHEN leave_date IS NULL THEN 
-                EXTRACT(EPOCH FROM (CURRENT_DATE - hire_date)) / 86400
+                CURRENT_DATE - hire_date
             ELSE 
-                EXTRACT(EPOCH FROM (leave_date - hire_date)) / 86400
+                leave_date - hire_date
         END
     ), 2) AS avg_days,
     ROUND(AVG(
         CASE 
             WHEN leave_date IS NULL THEN 
-                EXTRACT(EPOCH FROM (CURRENT_DATE - hire_date)) / 86400 / 365.25
+                (CURRENT_DATE - hire_date) / 365.25
             ELSE 
-                EXTRACT(EPOCH FROM (leave_date - hire_date)) / 86400 / 365.25
+                (leave_date - hire_date) / 365.25
         END
     ), 2) AS avg_years
 FROM employees;
@@ -166,7 +166,7 @@ employee_tenure AS (
         e.employee_id,
         e.employee_name,
         e.hire_date,
-        EXTRACT(EPOCH FROM (CURRENT_DATE - e.hire_date)) / 86400 / 365.25 AS years_employed
+        (CURRENT_DATE - e.hire_date) / 365.25 AS years_employed
     FROM employees e
     WHERE e.leave_date IS NULL
 )

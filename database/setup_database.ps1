@@ -8,7 +8,7 @@ Write-Host ""
 
 # 配置参数
 $POSTGRES_USER = "postgres"
-$POSTGRES_PASSWORD = "postgres"  # 请根据实际情况修改
+$POSTGRES_PASSWORD = "050916"  # 请根据实际情况修改
 $DB_NAME = "erp_agent_db"
 
 # 检查 PostgreSQL 是否安装
@@ -51,12 +51,82 @@ Write-Host ""
 Write-Host "[4/5] 初始化数据库结构..." -ForegroundColor Yellow
 $env:PGPASSWORD = $POSTGRES_PASSWORD
 
-# 创建数据库和表结构
-psql -U $POSTGRES_USER -f init_database.sql 2>&1 | Out-Null
+# 步骤1: 连接到 postgres 数据库，创建数据库和用户
+Write-Host "  创建数据库和用户..." -ForegroundColor Gray
+$createDbScript = @"
+DROP DATABASE IF EXISTS $DB_NAME;
+CREATE DATABASE $DB_NAME
+    WITH 
+    ENCODING = 'UTF8'
+    TEMPLATE = template0;
+
+DROP USER IF EXISTS erp_agent_user;
+CREATE USER erp_agent_user WITH PASSWORD 'erp_agent_2026';
+GRANT CONNECT ON DATABASE $DB_NAME TO erp_agent_user;
+"@
+
+$createDbScript | psql -U $POSTGRES_USER -d postgres 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "✗ 数据库和用户创建失败" -ForegroundColor Red
+    Write-Host "请检查 PostgreSQL 是否运行，以及密码是否正确" -ForegroundColor Red
+    exit 1
+}
+
+# 步骤2: 连接到 erp_agent_db 数据库，创建表结构
+Write-Host "  创建表结构..." -ForegroundColor Gray
+$createTableScript = @"
+-- 授予 schema 使用权限
+GRANT USAGE ON SCHEMA public TO erp_agent_user;
+
+-- 创建员工表
+DROP TABLE IF EXISTS salaries CASCADE;
+DROP TABLE IF EXISTS employees CASCADE;
+
+CREATE TABLE employees (
+    employee_id VARCHAR(20) PRIMARY KEY,
+    employee_name VARCHAR(100) NOT NULL,
+    department_name VARCHAR(50) NOT NULL,
+    current_level INTEGER NOT NULL CHECK (current_level >= 1 AND current_level <= 10),
+    hire_date DATE NOT NULL,
+    leave_date DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT check_leave_date CHECK (leave_date IS NULL OR leave_date >= hire_date)
+);
+
+-- 创建工资表
+CREATE TABLE salaries (
+    salary_id SERIAL PRIMARY KEY,
+    employee_id VARCHAR(20) NOT NULL,
+    payment_date DATE NOT NULL,
+    salary_amount DECIMAL(10,2) NOT NULL CHECK (salary_amount >= 0),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE,
+    UNIQUE(employee_id, payment_date)
+);
+
+-- 创建索引
+CREATE INDEX idx_employees_department ON employees(department_name);
+CREATE INDEX idx_employees_hire_date ON employees(hire_date);
+CREATE INDEX idx_employees_active ON employees(leave_date) WHERE leave_date IS NULL;
+CREATE INDEX idx_salaries_payment_date ON salaries(payment_date);
+CREATE INDEX idx_salaries_employee_date ON salaries(employee_id, payment_date);
+
+-- 授予查询权限
+GRANT SELECT ON employees TO erp_agent_user;
+GRANT SELECT ON salaries TO erp_agent_user;
+GRANT USAGE ON SEQUENCE salaries_salary_id_seq TO erp_agent_user;
+
+-- 添加表注释
+COMMENT ON TABLE employees IS '员工表：存储员工基本信息';
+COMMENT ON TABLE salaries IS '工资表：存储员工每月工资记录';
+"@
+
+$createTableScript | psql -U $POSTGRES_USER -d $DB_NAME 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) {
     Write-Host "✓ 数据库结构创建成功" -ForegroundColor Green
 } else {
-    Write-Host "✗ 数据库结构创建失败" -ForegroundColor Red
+    Write-Host "✗ 表结构创建失败" -ForegroundColor Red
     Write-Host "请检查 PostgreSQL 是否运行，以及密码是否正确" -ForegroundColor Red
     exit 1
 }
@@ -68,13 +138,13 @@ Write-Host "    （这可能需要几分钟时间）" -ForegroundColor Gray
 
 # 修改 Python 脚本中的密码配置
 $pythonScript = Get-Content "generate_test_data.py" -Raw
-$pythonScript = $pythonScript -replace "'password': 'postgres'", "'password': '$POSTGRES_PASSWORD'"
+$pythonScript = $pythonScript -replace "    'password': 'postgres'  # 请根据实际情况修改", "    'password': '$POSTGRES_PASSWORD'"
 $pythonScript | Set-Content "generate_test_data_temp.py"
 
 try {
     python generate_test_data_temp.py
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "✓ 测试数据生成成功" -ForegroundColor Green
+        Write-Host "✓ 测试数据生成成功（确定性数据）" -ForegroundColor Green
     } else {
         Write-Host "✗ 测试数据生成失败" -ForegroundColor Red
         exit 1

@@ -1,0 +1,342 @@
+# ERP 数据库 Schema 说明
+
+## 数据库基本信息
+- **数据库名称**: erp_agent_db
+- **字符集**: UTF-8
+- **数据库系统**: PostgreSQL 14+
+- **时间范围**: 2021-01-01 至 2026-01-25
+
+---
+
+## 表结构详细说明
+
+### 1. employees 表（员工表）
+
+存储员工的基本信息，包括在职和离职员工。
+
+#### 字段说明
+
+| 字段名            | 数据类型        | 约束条件                  | 说明                                  |
+|------------------|----------------|--------------------------|---------------------------------------|
+| employee_id      | VARCHAR(20)    | PRIMARY KEY              | 员工唯一标识，格式：EMP001, EMP002... |
+| employee_name    | VARCHAR(100)   | NOT NULL                 | 员工姓名                               |
+| department_name  | VARCHAR(50)    | NOT NULL                 | 所属部门名称（A部门、B部门等）          |
+| current_level    | INTEGER        | NOT NULL, 1-10           | 当前职级（1-10级，10级最高）            |
+| hire_date        | DATE           | NOT NULL                 | 入职日期                               |
+| leave_date       | DATE           | NULL（在职）/ NOT NULL（离职） | 离职日期                               |
+| created_at       | TIMESTAMP      | DEFAULT CURRENT_TIMESTAMP | 记录创建时间                           |
+| updated_at       | TIMESTAMP      | DEFAULT CURRENT_TIMESTAMP | 记录更新时间                           |
+
+#### 重要业务规则
+
+1. **在职员工判断**: `leave_date IS NULL`
+2. **离职员工判断**: `leave_date IS NOT NULL`
+3. **离职日期约束**: 离职日期必须晚于或等于入职日期
+4. **职级范围**: 1-10级，数字越大职级越高
+5. **部门列表**: 公司目前有5个部门（A部门、B部门、C部门、D部门、E部门）
+
+#### 索引
+
+- `idx_employees_department` - 部门索引（加速按部门查询）
+- `idx_employees_hire_date` - 入职日期索引（加速时间范围查询）
+- `idx_employees_active` - 在职员工索引（仅索引 leave_date IS NULL 的记录）
+
+#### 示例数据
+
+```sql
+-- 在职员工示例
+employee_id: 'EMP001'
+employee_name: '张伟'
+department_name: 'A部门'
+current_level: 5
+hire_date: '2021-03-15'
+leave_date: NULL
+
+-- 离职员工示例
+employee_id: 'EMP022'
+employee_name: '邓超'
+department_name: 'A部门'
+current_level: 6
+hire_date: '2022-12-15'
+leave_date: '2024-06-15'
+```
+
+---
+
+### 2. salaries 表（工资表）
+
+存储员工每月的工资发放记录。
+
+#### 字段说明
+
+| 字段名            | 数据类型          | 约束条件                    | 说明                                    |
+|------------------|------------------|----------------------------|----------------------------------------|
+| salary_id        | SERIAL           | PRIMARY KEY                | 工资记录自增主键                         |
+| employee_id      | VARCHAR(20)      | FOREIGN KEY, NOT NULL      | 关联 employees 表的员工ID                |
+| payment_date     | DATE             | NOT NULL                   | 工资发放日期（每月25号）                  |
+| salary_amount    | DECIMAL(10,2)    | NOT NULL, >= 0             | 工资金额（精确到分）                      |
+| created_at       | TIMESTAMP        | DEFAULT CURRENT_TIMESTAMP  | 记录创建时间                             |
+
+#### 重要业务规则
+
+1. **发薪日期**: 公司统一在每月25号发放工资
+2. **工资范围**: 
+   - 最低工资: ¥7,000（1级员工）
+   - 最高工资: ¥52,500+（10级员工）
+3. **唯一性约束**: 每个员工在同一个发薪日期只能有一条工资记录
+   - `UNIQUE(employee_id, payment_date)`
+4. **级联删除**: 当员工记录被删除时，相关工资记录也会被删除
+5. **工资记录时间范围**: 
+   - 从员工入职当月或次月开始记录
+   - 离职员工的工资记录到离职月份为止
+
+#### 索引
+
+- `idx_salaries_payment_date` - 发薪日期索引（加速时间范围查询）
+- `idx_salaries_employee_date` - 复合索引（员工ID + 发薪日期，加速关联查询）
+
+#### 工资计算说明
+
+1. **基础工资**（按职级）:
+   - 1级: ¥7,000
+   - 2级: ¥9,000
+   - 3级: ¥11,000
+   - 4级: ¥13,500
+   - 5级: ¥16,500
+   - 6级: ¥20,000
+   - 7级: ¥25,000
+   - 8级: ¥31,500
+   - 9级: ¥40,000
+   - 10级: ¥52,500
+
+2. **A部门工资系数**: A部门员工工资在基础工资上 +5%
+
+3. **年度涨薪**: 每年1月份固定涨薪7.5%
+
+4. **特殊涨薪**: 部分员工在2025年6月有40%的特殊涨薪
+
+#### 示例数据
+
+```sql
+salary_id: 12345
+employee_id: 'EMP001'
+payment_date: '2026-01-25'
+salary_amount: 18500.00
+```
+
+---
+
+## 表关系
+
+```
+employees (1) ←──────── (N) salaries
+    │                        │
+    └─ employee_id ─────────┘
+```
+
+- **一对多关系**: 一个员工可以有多条工资记录（每月一条）
+- **外键约束**: salaries.employee_id 引用 employees.employee_id
+- **级联删除**: 删除员工时，自动删除其所有工资记录
+
+---
+
+## 数据统计概览
+
+### 员工统计
+- **员工总数**: 100人
+- **在职员工**: 约88人
+- **离职员工**: 约12人
+
+### 部门分布
+- **A部门**: 25人（包含离职3人）
+- **B部门**: 23人（包含离职3人）
+- **C部门**: 20人（包含离职2人）
+- **D部门**: 18人（包含离职2人）
+- **E部门**: 14人（包含离职1人）
+
+### 职级分布
+- **1级**: 约10人（新员工）
+- **2-4级**: 约40人（初中级员工）
+- **5-7级**: 约35人（中高级员工）
+- **8-10级**: 约15人（高级员工）
+
+### 工资记录
+- **记录总数**: 约5000+条
+- **时间跨度**: 2021年至2026年1月
+- **记录频率**: 每月25号发放
+
+---
+
+## 常见查询场景和注意事项
+
+### 1. 查询在职员工
+```sql
+-- 正确做法
+SELECT * FROM employees WHERE leave_date IS NULL;
+
+-- 错误做法（不要用）
+SELECT * FROM employees WHERE leave_date = NULL;
+```
+
+### 2. 计算员工在职时长
+```sql
+-- 在职员工：用当前日期减去入职日期
+CASE 
+    WHEN leave_date IS NULL 
+    THEN CURRENT_DATE - hire_date
+    ELSE leave_date - hire_date
+END
+```
+
+### 3. 按月统计工资
+```sql
+-- 使用 DATE_TRUNC 按月分组
+SELECT 
+    DATE_TRUNC('month', payment_date) as month,
+    AVG(salary_amount) as avg_salary
+FROM salaries
+GROUP BY DATE_TRUNC('month', payment_date);
+```
+
+### 4. 计算特定年份的数据
+```sql
+-- 使用 EXTRACT 函数提取年份
+SELECT * 
+FROM salaries 
+WHERE EXTRACT(YEAR FROM payment_date) = 2025;
+```
+
+### 5. 关联查询员工和工资
+```sql
+-- 标准 JOIN 写法
+SELECT 
+    e.employee_name,
+    e.department_name,
+    s.payment_date,
+    s.salary_amount
+FROM employees e
+JOIN salaries s ON e.employee_id = s.employee_id
+WHERE e.leave_date IS NULL;  -- 仅查询在职员工
+```
+
+### 6. 查询最新工资
+```sql
+-- 使用子查询找到每个员工的最新工资
+SELECT e.*, s.salary_amount
+FROM employees e
+JOIN salaries s ON e.employee_id = s.employee_id
+WHERE s.payment_date = (
+    SELECT MAX(payment_date)
+    FROM salaries
+    WHERE employee_id = e.employee_id
+);
+```
+
+### 7. 计算同比/环比涨薪
+```sql
+-- 使用 CTE 或窗口函数
+WITH salary_data AS (
+    SELECT 
+        employee_id,
+        EXTRACT(YEAR FROM payment_date) as year,
+        AVG(salary_amount) as avg_salary
+    FROM salaries
+    GROUP BY employee_id, EXTRACT(YEAR FROM payment_date)
+)
+SELECT 
+    current.employee_id,
+    current.year,
+    current.avg_salary as current_salary,
+    prev.avg_salary as prev_salary,
+    current.avg_salary - prev.avg_salary as increase
+FROM salary_data current
+LEFT JOIN salary_data prev 
+    ON current.employee_id = prev.employee_id 
+    AND current.year = prev.year + 1;
+```
+
+### 8. 检测拖欠工资
+```sql
+-- 生成应发工资月份，检查是否有缺失
+WITH employee_months AS (
+    SELECT 
+        e.employee_id,
+        generate_series(
+            DATE_TRUNC('month', e.hire_date),
+            DATE_TRUNC('month', COALESCE(e.leave_date, CURRENT_DATE)),
+            '1 month'::interval
+        )::DATE as expected_month
+    FROM employees e
+)
+SELECT em.*
+FROM employee_months em
+LEFT JOIN salaries s 
+    ON em.employee_id = s.employee_id 
+    AND DATE_TRUNC('month', s.payment_date) = em.expected_month
+WHERE s.salary_id IS NULL
+    AND em.expected_month < DATE_TRUNC('month', CURRENT_DATE);
+```
+
+---
+
+## 数据质量说明
+
+### 已知的数据特征
+
+1. **拖欠工资记录**: 
+   - 员工 EMP088（毛不易）在 2024年7月 没有工资记录
+   - 员工 EMP092（王力宏）在 2023年11月 没有工资记录
+
+2. **高涨薪员工**: 8名员工在2025年6月有40%的特殊涨薪
+   - EMP003, EMP011, EMP029, EMP032, EMP055, EMP059, EMP077, EMP089
+
+3. **确定性数据**: 
+   - 本数据集使用确定性算法生成
+   - 每次重新生成数据，结果完全一致
+   - 适合用于测试和验证
+
+---
+
+## 时间相关术语映射
+
+当用户使用时间相关词汇时，请参考以下映射（假设当前日期为 2026-01-25）:
+
+| 用户表达        | 对应时间范围                  | SQL 条件示例                          |
+|----------------|------------------------------|--------------------------------------|
+| 今年           | 2026年                       | EXTRACT(YEAR FROM date) = 2026       |
+| 去年           | 2025年                       | EXTRACT(YEAR FROM date) = 2025       |
+| 前年           | 2024年                       | EXTRACT(YEAR FROM date) = 2024       |
+| 最近一年       | 2025-01-25 至 2026-01-25     | date >= '2025-01-25'                 |
+| 本月           | 2026年1月                    | DATE_TRUNC('month', date) = '2026-01-01' |
+| 上个月         | 2025年12月                   | DATE_TRUNC('month', date) = '2025-12-01' |
+| 最近完整月     | 2025年12月                   | DATE_TRUNC('month', date) = '2025-12-01' |
+
+---
+
+## 注意事项
+
+1. **NULL 值处理**: 使用 `IS NULL` 或 `IS NOT NULL`，不要使用 `= NULL`
+2. **日期比较**: 使用标准日期格式 'YYYY-MM-DD'
+3. **金额精度**: 工资金额使用 DECIMAL(10,2)，保留两位小数
+4. **时区**: 数据库使用本地时区，日期计算注意时区影响
+5. **性能优化**: 利用已建立的索引，避免全表扫描
+6. **权限限制**: 查询用户仅有 SELECT 权限，不能进行 INSERT/UPDATE/DELETE 操作
+
+---
+
+## 数据库连接信息（示例）
+
+```python
+DB_CONFIG = {
+    'host': 'localhost',
+    'port': 5432,
+    'database': 'erp_agent_db',
+    'user': 'erp_agent_user',  # 只读用户
+    'password': 'erp_agent_2026'
+}
+```
+
+---
+
+**最后更新**: 2026-01-25
+**Schema 版本**: 1.0

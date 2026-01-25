@@ -82,15 +82,16 @@ GRANT SELECT ON salaries TO erp_agent_user;
 GRANT USAGE ON SEQUENCE salaries_salary_id_seq TO erp_agent_user;
 
 -- =====================================================
--- 验证表创建
+-- 添加表注释
 -- =====================================================
-
--- 查看表结构
-\d employees
-\d salaries
-
--- 查看索引
-\di
 
 COMMENT ON TABLE employees IS '员工表：存储员工基本信息';
 COMMENT ON TABLE salaries IS '工资表：存储员工每月工资记录';
+
+-- =====================================================
+-- 验证表创建（仅在交互式 psql 中使用）
+-- =====================================================
+-- 如需验证，请手动连接数据库后执行：
+-- \d employees
+-- \d salaries
+-- \di

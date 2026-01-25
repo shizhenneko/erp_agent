@@ -1,0 +1,334 @@
+# Few-shot 示例库
+
+## 示例1: 简单统计查询 - 在职员工数量
+
+**问题**: 有多少在职员工？
+
+**分析**: 需要统计 leave_date 为 NULL 的员工数量
+
+**SQL**:
+```sql
+SELECT COUNT(*) as active_employee_count
+FROM employees
+WHERE leave_date IS NULL;
+```
+
+---
+
+## 示例2: 部门聚合查询 - 各部门在职员工统计
+
+**问题**: 公司每个部门有多少在职员工？
+
+**分析**: 按部门分组统计在职员工，并按人数降序排列
+
+**SQL**:
+```sql
+SELECT 
+    department_name,
+    COUNT(*) as employee_count
+FROM employees
+WHERE leave_date IS NULL
+GROUP BY department_name
+ORDER BY employee_count DESC;
+```
+
+---
+
+## 示例3: 时间范围查询 - 今年新入职人数
+
+**问题**: 今年新入职了多少人？
+
+**时间上下文**: 今年=2026年
+
+**分析**: 统计 hire_date 在 2026 年的员工
+
+**SQL**:
+```sql
+SELECT COUNT(*) as new_hires_this_year
+FROM employees
+WHERE EXTRACT(YEAR FROM hire_date) = 2026;
+```
+
+---
+
+## 示例4: 简单关联查询 - 部门平均工资
+
+**问题**: 去年A部门的平均工资是多少？
+
+**时间上下文**: 去年=2025年
+
+**分析**: 
+1. 需要关联 employees 和 salaries 表
+2. 筛选 A部门
+3. 筛选 2025 年的工资记录
+4. 计算平均值
+
+**SQL**:
+```sql
+SELECT AVG(s.salary_amount) as avg_salary
+FROM employees e
+JOIN salaries s ON e.employee_id = s.employee_id
+WHERE e.department_name = 'A部门'
+    AND EXTRACT(YEAR FROM s.payment_date) = 2025;
+```
+
+---
+
+## 示例5: 时间范围查询（跨年） - 跨年平均工资
+
+**问题**: 从前年3月到去年5月，A部门的平均工资是多少？
+
+**时间上下文**: 前年=2024年, 去年=2025年
+
+**分析**: 使用 BETWEEN 筛选日期范围（2024-03-01 到 2025-05-31）
+
+**SQL**:
+```sql
+SELECT AVG(s.salary_amount) as avg_salary
+FROM employees e
+JOIN salaries s ON e.employee_id = s.employee_id
+WHERE e.department_name = 'A部门'
+    AND s.payment_date BETWEEN '2024-03-01' AND '2025-05-31';
+```
+
+---
+
+## 示例6: 排序和限制 - 工资最高的员工
+
+**问题**: 工资最高的前10名员工是谁？
+
+**分析**: 需要找到每个员工的最新工资，然后按工资降序排列，取前10名
+
+**SQL**:
+```sql
+SELECT 
+    e.employee_name,
+    e.department_name,
+    e.current_level,
+    s.salary_amount
+FROM employees e
+JOIN salaries s ON e.employee_id = s.employee_id
+WHERE s.payment_date = (
+    SELECT MAX(payment_date) 
+    FROM salaries 
+    WHERE employee_id = e.employee_id
+)
+ORDER BY s.salary_amount DESC
+LIMIT 10;
+```
+
+---
+
+## 示例7: 时间计算 - 在职时长
+
+**问题**: 在职员工平均在公司工作了多久？
+
+**分析**: 
+1. 筛选在职员工（leave_date IS NULL）
+2. 计算当前日期与入职日期的差值（天数）
+3. 求平均值
+
+**SQL**:
+```sql
+SELECT AVG(CURRENT_DATE - hire_date) as avg_tenure_days
+FROM employees
+WHERE leave_date IS NULL;
+```
+
+---
+
+## 示例8: CASE表达式 - 多条件统计
+
+**问题**: 每个部门今年和去年各新入职了多少人？
+
+**时间上下文**: 今年=2026年, 去年=2025年
+
+**分析**: 使用 CASE 表达式分别统计今年和去年的入职人数
+
+**SQL**:
+```sql
+SELECT 
+    department_name,
+    SUM(CASE WHEN EXTRACT(YEAR FROM hire_date) = 2026 THEN 1 ELSE 0 END) as hires_2026,
+    SUM(CASE WHEN EXTRACT(YEAR FROM hire_date) = 2025 THEN 1 ELSE 0 END) as hires_2025
+FROM employees
+GROUP BY department_name
+ORDER BY department_name;
+```
+
+---
+
+## 示例9: 复杂时间计算 - 包含离职员工的在职时长
+
+**问题**: 平均每个员工在公司在职多久？（包括已离职员工）
+
+**分析**: 
+1. 在职员工：用当前日期减去入职日期
+2. 离职员工：用离职日期减去入职日期
+3. 使用 CASE 表达式处理两种情况
+
+**SQL**:
+```sql
+SELECT AVG(
+    CASE 
+        WHEN leave_date IS NULL 
+        THEN CURRENT_DATE - hire_date
+        ELSE leave_date - hire_date
+    END
+) as avg_tenure_days
+FROM employees;
+```
+
+---
+
+## 示例10: 窗口函数 - 部门内工资排名
+
+**问题**: 每个部门工资最高的3名员工是谁？
+
+**分析**: 
+1. 找到每个员工的最新工资
+2. 使用窗口函数在部门内按工资排名
+3. 筛选出排名前3的员工
+
+**SQL**:
+```sql
+WITH latest_salaries AS (
+    SELECT 
+        e.employee_id,
+        e.employee_name,
+        e.department_name,
+        s.salary_amount,
+        ROW_NUMBER() OVER (PARTITION BY e.employee_id ORDER BY s.payment_date DESC) as rn
+    FROM employees e
+    JOIN salaries s ON e.employee_id = s.employee_id
+    WHERE e.leave_date IS NULL
+),
+ranked_salaries AS (
+    SELECT 
+        employee_id,
+        employee_name,
+        department_name,
+        salary_amount,
+        ROW_NUMBER() OVER (PARTITION BY department_name ORDER BY salary_amount DESC) as dept_rank
+    FROM latest_salaries
+    WHERE rn = 1
+)
+SELECT 
+    department_name,
+    employee_name,
+    salary_amount,
+    dept_rank
+FROM ranked_salaries
+WHERE dept_rank <= 3
+ORDER BY department_name, dept_rank;
+```
+
+---
+
+## 示例11: CTE（公共表表达式） - 涨薪幅度计算
+
+**问题**: 从去年到今年涨薪幅度最大的10位员工是谁？
+
+**时间上下文**: 去年=2025年, 今年=2026年
+
+**分析**: 
+1. 分别计算每个员工2025年和2026年的平均工资
+2. 计算涨薪金额和涨薪比例
+3. 按涨薪比例降序排列，取前10名
+
+**SQL**:
+```sql
+WITH salary_2025 AS (
+    SELECT employee_id, AVG(salary_amount) as avg_2025
+    FROM salaries
+    WHERE EXTRACT(YEAR FROM payment_date) = 2025
+    GROUP BY employee_id
+),
+salary_2026 AS (
+    SELECT employee_id, AVG(salary_amount) as avg_2026
+    FROM salaries
+    WHERE EXTRACT(YEAR FROM payment_date) = 2026
+    GROUP BY employee_id
+)
+SELECT 
+    e.employee_name,
+    e.department_name,
+    ROUND(s25.avg_2025, 2) as salary_2025,
+    ROUND(s26.avg_2026, 2) as salary_2026,
+    ROUND(s26.avg_2026 - s25.avg_2025, 2) as increase_amount,
+    ROUND(((s26.avg_2026 - s25.avg_2025) / s25.avg_2025 * 100), 2) as increase_percentage
+FROM employees e
+JOIN salary_2025 s25 ON e.employee_id = s25.employee_id
+JOIN salary_2026 s26 ON e.employee_id = s26.employee_id
+ORDER BY increase_percentage DESC
+LIMIT 10;
+```
+
+---
+
+## 示例12: 复杂查询 - 检测拖欠工资
+
+**问题**: 有没有出现过拖欠员工工资的情况？
+
+**分析**: 
+1. 使用 generate_series 生成每个员工应该发薪的所有月份
+2. 与实际工资记录进行 LEFT JOIN
+3. 找出没有工资记录的月份
+4. 排除当前月份（因为可能还未发薪）
+
+**SQL**:
+```sql
+WITH employee_months AS (
+    SELECT 
+        e.employee_id,
+        e.employee_name,
+        e.department_name,
+        generate_series(
+            DATE_TRUNC('month', e.hire_date),
+            DATE_TRUNC('month', COALESCE(e.leave_date, CURRENT_DATE)),
+            '1 month'::interval
+        )::DATE as expected_month
+    FROM employees e
+)
+SELECT 
+    em.employee_id,
+    em.employee_name,
+    em.department_name,
+    em.expected_month
+FROM employee_months em
+LEFT JOIN salaries s ON em.employee_id = s.employee_id 
+    AND DATE_TRUNC('month', s.payment_date) = em.expected_month
+WHERE s.salary_id IS NULL
+    AND em.expected_month < DATE_TRUNC('month', CURRENT_DATE)
+ORDER BY em.expected_month DESC, em.employee_name;
+```
+
+---
+
+## 使用指南
+
+### 示例选择策略
+
+根据用户问题的类型，选择最相关的3-5个示例：
+
+1. **简单统计**: 使用示例1-3
+2. **部门分析**: 使用示例2、4、10
+3. **时间范围查询**: 使用示例3、5、8
+4. **工资相关**: 使用示例4、6、11
+5. **排名问题**: 使用示例6、10
+6. **在职时长**: 使用示例7、9
+7. **复杂多步**: 使用示例10、11、12
+
+### 关键技术点总结
+
+- **时间筛选**: EXTRACT(YEAR FROM date), DATE_TRUNC(), BETWEEN
+- **条件聚合**: CASE WHEN ... THEN ... ELSE ... END
+- **窗口函数**: ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)
+- **CTE**: WITH table_name AS (...)
+- **子查询**: WHERE col = (SELECT ...)
+- **序列生成**: generate_series()
+- **空值处理**: COALESCE(), IS NULL, IS NOT NULL
+
+---
+
+**最后更新**: 2026-01-25
