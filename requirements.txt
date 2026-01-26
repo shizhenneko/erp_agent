@@ -1,4 +1,17 @@
-# ERP Agent 数据库初始化依赖
+# ERP Agent 项目依赖
 # 安装方式: pip install -r requirements.txt
 
-psycopg2-binary>=2.9.0
+# 核心依赖
+psycopg2-binary==2.9.9
+requests==2.31.0
+python-dotenv==1.0.0
+pydantic==2.5.3
+
+# 工具库
+loguru==0.7.2
+python-dateutil==2.8.2
+
+# 开发依赖
+pytest==7.4.3
+black==23.12.1
+flake8==7.0.0

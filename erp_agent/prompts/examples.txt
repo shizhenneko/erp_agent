@@ -1,334 +1,787 @@
-# Few-shot 示例库
+# SQL 推理方法教学 - ReAct 框架示例
 
-## 示例1: 简单统计查询 - 在职员工数量
+本文件通过**虚构的业务场景**展示如何使用 ReAct（Reasoning + Acting）框架进行数据库查询推理。
+重点在于**通用的推理方法和SQL技术**，而非特定问题的答案。
 
-**问题**: 有多少在职员工？
+**重要原则**:
+1. 以下示例使用的表结构与实际数据库不同，仅用于教学推理方法
+2. **学习"方法"，不要记忆"答案"** - 面对新问题时，基于实际Schema独立推理
+3. **时间表达式必须重新计算** - 示例中的年份仅为演示，实际查询时根据当前日期重新推算
 
-**分析**: 需要统计 leave_date 为 NULL 的员工数量
+---
 
-**SQL**:
-```sql
-SELECT COUNT(*) as active_employee_count
-FROM employees
-WHERE leave_date IS NULL;
+## ⚠️ 重要：如何正确使用这些示例
+
+### 你应该学习的：
+- ✅ **推理方法**：如何分解问题、选择技术、设计查询策略
+- ✅ **SQL技术模式**：CTE、JOIN、窗口函数、generate_series等用法
+- ✅ **思考过程**：从问题到SQL的完整推理链
+
+### 你不应该复制的：
+- ❌ **具体年份/日期**：示例中的2024、2025等年份仅为演示，实际查询时根据当前日期{year}重新计算
+- ❌ **表名和字段名**：示例使用虚构表（orders、readers等），实际查询必须使用Schema中的真实表名
+- ❌ **完整SQL语句**：不要照搬，要根据实际Schema和业务需求独立构建
+- ❌ **时间理解锚定**：不要因为看到示例中某个时间概念的具体实现，就在所有场景下都套用同样的理解
+
+### 推理检查清单（每次查询前）：
+1. ✅ 当前年份是{year}年，我是否正确计算了相对时间？
+2. ✅ 如果问题涉及"最近一个月/季度/年"，我是否判断了是否应使用最后一个**完整周期**？
+3. ✅ 我使用的表名和字段名是否来自实际Schema（而非示例）？
+4. ✅ 我是否理解了要使用的SQL技术，而不是死记硬背？
+5. ✅ 我的thought是否展示了完整的推理过程（特别是时间计算）？
+
+---
+
+## 推理方法论
+
+### 核心原则
+1. **问题分解**: 将复杂问题拆解为可执行的步骤
+2. **渐进式探索**: 从简单查询开始，逐步深入
+3. **结果验证**: 每次查询后分析结果是否符合预期
+4. **适时结束**: 当获得足够信息时，给出答案
+5. **独立思考**: 基于Schema和规则推理，不盲目复制示例
+
+### 推理步骤模板
+```
+Thought（思考）→ 分析问题、识别数据需求、设计策略
+Action（行动）→ execute_sql（查询数据）或 answer（给出答案）
+Observation（观察）→ 分析查询结果、发现规律或异常
 ```
 
 ---
 
-## 示例2: 部门聚合查询 - 各部门在职员工统计
+## 示例场景说明
 
-**问题**: 公司每个部门有多少在职员工？
+以下示例使用**虚构的电商数据库**，包含：
+- `orders` 表：订单信息（order_id, customer_id, order_date, status, total_amount）
+- `order_items` 表：订单明细（order_id, product_id, quantity, unit_price）
+- `products` 表：产品信息（product_id, product_name, category, stock_quantity）
+- `customers` 表：客户信息（customer_id, customer_name, register_date, level）
 
-**分析**: 按部门分组统计在职员工，并按人数降序排列
+**注意**: 这些表与你的实际数据库无关，仅用于教学。
 
-**SQL**:
-```sql
-SELECT 
-    department_name,
-    COUNT(*) as employee_count
-FROM employees
-WHERE leave_date IS NULL
-GROUP BY department_name
-ORDER BY employee_count DESC;
+---
+
+## 示例1: 单表统计 - 直接聚合
+
+**场景**: 统计某个状态的记录数量
+
+**问题**: "有多少已完成的订单？"
+
+### 第 1 轮：识别需求并直接查询
+
+**Thought（思考）**:
+这是一个简单的计数问题。分析：
+1. 涉及的表：orders（订单表）
+2. 筛选条件：status = '已完成'（或类似的状态标识）
+3. 聚合函数：COUNT() 统计数量
+4. 无需关联其他表，一次查询即可完成
+
+**Action（行动）**:
+```json
+{
+  "thought": "简单的订单计数，使用 COUNT 聚合函数配合 WHERE 条件筛选已完成状态",
+  "action": "execute_sql",
+  "sql": "SELECT COUNT(*) as completed_orders FROM orders WHERE status = '已完成';",
+  "is_final": false
+}
 ```
 
----
+**执行结果**: `[{'completed_orders': 1523}]`
 
-## 示例3: 时间范围查询 - 今年新入职人数
+### 第 2 轮：分析结果并给出答案
 
-**问题**: 今年新入职了多少人？
+**Thought（思考）**:
+查询成功返回了数量，结果清晰明确，可以直接回答用户问题。
 
-**时间上下文**: 今年=2026年
-
-**分析**: 统计 hire_date 在 2026 年的员工
-
-**SQL**:
-```sql
-SELECT COUNT(*) as new_hires_this_year
-FROM employees
-WHERE EXTRACT(YEAR FROM hire_date) = 2026;
+**Action（行动）**:
+```json
+{
+  "thought": "查询结果显示有 1523 个已完成的订单，直接回答用户",
+  "action": "answer",
+  "answer": "系统中共有 1,523 个已完成的订单。",
+  "is_final": true
+}
 ```
 
+### 关键学习点
+- **NULL 判断**: 使用 `IS NULL` 或 `IS NOT NULL`，而非 `= NULL`
+- **状态筛选**: 了解状态字段的可能值（通常需要先探索或根据业务逻辑推断）
+- **效率优先**: 简单问题用简单查询，避免过度复杂化
+
 ---
 
-## 示例4: 简单关联查询 - 部门平均工资
+## 示例2: 时间推理 - 相对日期计算
 
-**问题**: 去年A部门的平均工资是多少？
+**场景**: 处理相对时间表达式
 
-**时间上下文**: 去年=2025年
+**问题**: "去年第三季度的订单总额是多少？"
 
-**分析**: 
-1. 需要关联 employees 和 salaries 表
-2. 筛选 A部门
-3. 筛选 2025 年的工资记录
-4. 计算平均值
+### 第 1 轮：解析时间范围并查询
 
-**SQL**:
-```sql
-SELECT AVG(s.salary_amount) as avg_salary
-FROM employees e
-JOIN salaries s ON e.employee_id = s.employee_id
-WHERE e.department_name = 'A部门'
-    AND EXTRACT(YEAR FROM s.payment_date) = 2025;
+**Thought（思考）**:
+这是一个时间范围查询，需要：
+1. 理解时间表达式：假设当前是 2026年，"去年"=2025年
+2. 计算季度范围："第三季度"=7月1日到9月30日
+3. 确定日期范围：2025-07-01 到 2025-09-30
+4. 聚合函数：SUM(total_amount) 计算总额
+
+**Action（行动）**:
+```json
+{
+  "thought": "当前年份2026，去年是2025年，第三季度是7-9月。日期范围：2025-07-01 到 2025-09-30。对订单金额求和。",
+  "action": "execute_sql",
+  "sql": "SELECT SUM(total_amount) as total_revenue FROM orders WHERE order_date >= '2025-07-01' AND order_date <= '2025-09-30';",
+  "is_final": false
+}
 ```
 
----
+**执行结果**: `[{'total_revenue': 2847650.80}]`
 
-## 示例5: 时间范围查询（跨年） - 跨年平均工资
+### 第 2 轮：给出答案
 
-**问题**: 从前年3月到去年5月，A部门的平均工资是多少？
+**Thought（思考）**:
+查询结果清晰，可以直接回答。
 
-**时间上下文**: 前年=2024年, 去年=2025年
-
-**分析**: 使用 BETWEEN 筛选日期范围（2024-03-01 到 2025-05-31）
-
-**SQL**:
-```sql
-SELECT AVG(s.salary_amount) as avg_salary
-FROM employees e
-JOIN salaries s ON e.employee_id = s.employee_id
-WHERE e.department_name = 'A部门'
-    AND s.payment_date BETWEEN '2024-03-01' AND '2025-05-31';
+**Action（行动）**:
+```json
+{
+  "thought": "2025年第三季度的订单总额为 2847650.80",
+  "action": "answer",
+  "answer": "去年（2025年）第三季度的订单总额为 2,847,650.80 元。",
+  "is_final": true
+}
 ```
 
+### 关键学习点
+- **时间推理**: 根据当前日期推算相对年份（去年、前年、今年）
+- **季度划分**: Q1(1-3月)、Q2(4-6月)、Q3(7-9月)、Q4(10-12月)
+- **日期边界**: 使用 `>=` 和 `<=` 包含起止日期
+- **Thought 透明化**: 在 thought 中明确展示时间计算过程
+
 ---
 
-## 示例6: 排序和限制 - 工资最高的员工
+## 示例2B: 完整月份概念 - "最近一个月"的正确理解
 
-**问题**: 工资最高的前10名员工是谁？
+**场景**: 处理"最近一个月"等需要完整数据周期的查询
 
-**分析**: 需要找到每个员工的最新工资，然后按工资降序排列，取前10名
+**问题**: "最近一个月的订单平均金额是多少？"
 
-**SQL**:
-```sql
-SELECT 
-    e.employee_name,
-    e.department_name,
-    e.current_level,
-    s.salary_amount
-FROM employees e
-JOIN salaries s ON e.employee_id = s.employee_id
-WHERE s.payment_date = (
-    SELECT MAX(payment_date) 
-    FROM salaries 
-    WHERE employee_id = e.employee_id
-)
-ORDER BY s.salary_amount DESC
-LIMIT 10;
+**⚠️ 重要背景**: 
+- 假设当前日期是 2026-01-25（1月25日）
+- 1月份还未结束，数据不完整
+- 统计分析应使用**最后一个完整月份**
+
+### 第 1 轮：正确理解时间范围
+
+**Thought（思考）**:
+这是一个时间范围查询，关键在于正确理解"最近一个月"：
+
+**【时间推理过程】**
+1. 当前日期: 2026-01-25（假设的示例日期）
+2. 当前月份: 2026年1月，但月份尚未结束（不是月末）
+3. **核心判断**: 在数据统计场景中，"最近一个月"指**最后一个完整月份**
+4. 因此，"最近一个月" = 2025年12月（上一个完整月份）
+5. 日期范围: 2025-12-01 到 2025-12-31
+
+**【为什么不用2026年1月】**
+- 1月份只过了25天，数据不完整
+- 会导致平均值偏低（分母不完整）
+- 无法与历史完整月份进行公平比较
+
+**Action（行动）**:
+```json
+{
+  "thought": "当前日期2026-01-25，本月未结束。'最近一个月'应理解为最后一个完整月份2025年12月（2025-12-01到2025-12-31）。计算该月订单的平均金额。",
+  "action": "execute_sql",
+  "sql": "SELECT ROUND(AVG(total_amount), 2) as avg_order_amount FROM orders WHERE order_date >= '2025-12-01' AND order_date < '2026-01-01';",
+  "is_final": false
+}
 ```
 
----
+**执行结果**: `[{'avg_order_amount': 856.30}]`
 
-## 示例7: 时间计算 - 在职时长
+### 第 2 轮：给出答案
 
-**问题**: 在职员工平均在公司工作了多久？
+**Thought（思考）**:
+查询了2025年12月（最后一个完整月份）的数据，平均订单金额为856.30元。
 
-**分析**: 
-1. 筛选在职员工（leave_date IS NULL）
-2. 计算当前日期与入职日期的差值（天数）
-3. 求平均值
-
-**SQL**:
-```sql
-SELECT AVG(CURRENT_DATE - hire_date) as avg_tenure_days
-FROM employees
-WHERE leave_date IS NULL;
+**Action（行动）**:
+```json
+{
+  "thought": "已获得最近完整月份（2025年12月）的平均订单金额",
+  "action": "answer",
+  "answer": "最近一个月（2025年12月，最后一个完整月份）的订单平均金额为 856.30 元。",
+  "is_final": true
+}
 ```
 
+### ❌ 常见错误示例（避免！）
+
+**错误理解1**: 直接使用当前进行中的月份
+```json
+{
+  "thought": "查询2026年1月的订单平均金额",
+  "action": "execute_sql",
+  "sql": "SELECT AVG(total_amount) FROM orders WHERE order_date >= '2026-01-01' AND order_date <= '2026-01-25';"
+}
+```
+**问题**: 
+- 只有25天的数据，不是完整月份
+- 结果无法与其他完整月份比较
+- 可能误导决策
+
+**错误理解2**: 查询最近30天（虽然也是一种理解，但不符合月度统计需求）
+```json
+{
+  "sql": "SELECT AVG(total_amount) FROM orders WHERE order_date >= CURRENT_DATE - INTERVAL '30 days';"
+}
+```
+**问题**: 
+- 不是按月份统计（可能横跨两个月）
+- 不符合"月度"业务概念
+
+### 关键学习点
+- **完整周期原则**: 统计分析应使用完整的时间周期（完整月、完整季度、完整年）
+- **当前vs最近**: 当前月/当前季度 ≠ 最近一个月/最近一个季度（如果周期未结束）
+- **业务场景判断**: 在薪资、销售、业绩等统计场景中，默认使用完整周期
+- **Thought透明化**: 必须在thought中明确说明时间推理过程，避免锚定效应
+- **泛化能力**: 这个原则适用于月、季度、年等所有周期性统计
+
+### 泛化到其他场景
+- "最近一季度的销售额" → 如果Q1未结束，使用上一年Q4
+- "最近一年的增长率" → 如果2026年未结束，使用2025年完整年度
+- "最近一周的用户数" → 如果本周未结束，使用上周完整7天
+
 ---
 
-## 示例8: CASE表达式 - 多条件统计
+## 示例3: 多表关联 - JOIN 操作
 
-**问题**: 每个部门今年和去年各新入职了多少人？
+**场景**: 需要跨表获取信息
 
-**时间上下文**: 今年=2026年, 去年=2025年
+**问题**: "哪个产品类别的销量最高？"
 
-**分析**: 使用 CASE 表达式分别统计今年和去年的入职人数
+### 第 1 轮：设计关联查询
 
-**SQL**:
-```sql
-SELECT 
-    department_name,
-    SUM(CASE WHEN EXTRACT(YEAR FROM hire_date) = 2026 THEN 1 ELSE 0 END) as hires_2026,
-    SUM(CASE WHEN EXTRACT(YEAR FROM hire_date) = 2025 THEN 1 ELSE 0 END) as hires_2025
-FROM employees
-GROUP BY department_name
-ORDER BY department_name;
+**Thought（思考）**:
+这需要结合多个表的信息：
+1. 涉及的表：order_items（订单明细，包含销量）、products（产品，包含类别）
+2. 关联方式：通过 product_id 连接两表
+3. 分组维度：按产品类别分组
+4. 聚合计算：SUM(quantity) 计算总销量
+5. 排序：按销量降序，取第一名
+
+**Action（行动）**:
+```json
+{
+  "thought": "需要关联订单明细表和产品表，按类别分组统计销量，然后排序取最高值",
+  "action": "execute_sql",
+  "sql": "SELECT p.category, SUM(oi.quantity) as total_sales FROM order_items oi JOIN products p ON oi.product_id = p.product_id GROUP BY p.category ORDER BY total_sales DESC LIMIT 1;",
+  "is_final": false
+}
 ```
 
----
+**执行结果**: `[{'category': '电子产品', 'total_sales': 15823}]`
 
-## 示例9: 复杂时间计算 - 包含离职员工的在职时长
+### 第 2 轮：给出答案
 
-**问题**: 平均每个员工在公司在职多久？（包括已离职员工）
+**Thought（思考）**:
+查询结果显示电子产品类别的销量最高。
 
-**分析**: 
-1. 在职员工：用当前日期减去入职日期
-2. 离职员工：用离职日期减去入职日期
-3. 使用 CASE 表达式处理两种情况
-
-**SQL**:
-```sql
-SELECT AVG(
-    CASE 
-        WHEN leave_date IS NULL 
-        THEN CURRENT_DATE - hire_date
-        ELSE leave_date - hire_date
-    END
-) as avg_tenure_days
-FROM employees;
+**Action（行动）**:
+```json
+{
+  "thought": "电子产品类别的总销量为 15823 件，是所有类别中最高的",
+  "action": "answer",
+  "answer": "电子产品类别的销量最高，总计售出 15,823 件。",
+  "is_final": true
+}
 ```
 
+### 关键学习点
+- **JOIN 类型**: INNER JOIN（默认）、LEFT JOIN（保留左表所有记录）、RIGHT JOIN（保留右表）
+- **关联键**: 确保使用正确的外键关系（product_id、customer_id 等）
+- **GROUP BY**: 分组字段必须出现在 SELECT 中（非聚合的列）
+- **ORDER BY + LIMIT**: 获取排名前N的结果
+
 ---
 
-## 示例10: 窗口函数 - 部门内工资排名
+## 示例4: 分组比较 - CASE WHEN
 
-**问题**: 每个部门工资最高的3名员工是谁？
+**场景**: 按条件分组统计
 
-**分析**: 
-1. 找到每个员工的最新工资
-2. 使用窗口函数在部门内按工资排名
-3. 筛选出排名前3的员工
+**问题**: "不同客户等级的平均订单金额是多少？"
 
-**SQL**:
-```sql
-WITH latest_salaries AS (
-    SELECT 
-        e.employee_id,
-        e.employee_name,
-        e.department_name,
-        s.salary_amount,
-        ROW_NUMBER() OVER (PARTITION BY e.employee_id ORDER BY s.payment_date DESC) as rn
-    FROM employees e
-    JOIN salaries s ON e.employee_id = s.employee_id
-    WHERE e.leave_date IS NULL
-),
-ranked_salaries AS (
-    SELECT 
-        employee_id,
-        employee_name,
-        department_name,
-        salary_amount,
-        ROW_NUMBER() OVER (PARTITION BY department_name ORDER BY salary_amount DESC) as dept_rank
-    FROM latest_salaries
-    WHERE rn = 1
-)
-SELECT 
-    department_name,
-    employee_name,
-    salary_amount,
-    dept_rank
-FROM ranked_salaries
-WHERE dept_rank <= 3
-ORDER BY department_name, dept_rank;
+### 第 1 轮：设计分组查询
+
+**Thought（思考）**:
+这需要：
+1. 关联 orders 和 customers 表
+2. 按客户等级（level）分组
+3. 计算每组的平均订单金额
+4. 可能需要处理等级为空的情况
+
+**Action（行动）**:
+```json
+{
+  "thought": "关联订单表和客户表，按客户等级分组，计算每个等级的平均订单金额",
+  "action": "execute_sql",
+  "sql": "SELECT c.level, ROUND(AVG(o.total_amount), 2) as avg_order_amount FROM orders o JOIN customers c ON o.customer_id = c.customer_id WHERE c.level IS NOT NULL GROUP BY c.level ORDER BY avg_order_amount DESC;",
+  "is_final": false
+}
 ```
 
----
-
-## 示例11: CTE（公共表表达式） - 涨薪幅度计算
-
-**问题**: 从去年到今年涨薪幅度最大的10位员工是谁？
-
-**时间上下文**: 去年=2025年, 今年=2026年
-
-**分析**: 
-1. 分别计算每个员工2025年和2026年的平均工资
-2. 计算涨薪金额和涨薪比例
-3. 按涨薪比例降序排列，取前10名
-
-**SQL**:
-```sql
-WITH salary_2025 AS (
-    SELECT employee_id, AVG(salary_amount) as avg_2025
-    FROM salaries
-    WHERE EXTRACT(YEAR FROM payment_date) = 2025
-    GROUP BY employee_id
-),
-salary_2026 AS (
-    SELECT employee_id, AVG(salary_amount) as avg_2026
-    FROM salaries
-    WHERE EXTRACT(YEAR FROM payment_date) = 2026
-    GROUP BY employee_id
-)
-SELECT 
-    e.employee_name,
-    e.department_name,
-    ROUND(s25.avg_2025, 2) as salary_2025,
-    ROUND(s26.avg_2026, 2) as salary_2026,
-    ROUND(s26.avg_2026 - s25.avg_2025, 2) as increase_amount,
-    ROUND(((s26.avg_2026 - s25.avg_2025) / s25.avg_2025 * 100), 2) as increase_percentage
-FROM employees e
-JOIN salary_2025 s25 ON e.employee_id = s25.employee_id
-JOIN salary_2026 s26 ON e.employee_id = s26.employee_id
-ORDER BY increase_percentage DESC
-LIMIT 10;
+**执行结果**: 
+```
+[
+  {'level': 'VIP', 'avg_order_amount': 1280.50},
+  {'level': '黄金', 'avg_order_amount': 856.30},
+  {'level': '白银', 'avg_order_amount': 423.80}
+]
 ```
 
----
+### 第 2 轮：分析并给出答案
 
-## 示例12: 复杂查询 - 检测拖欠工资
+**Thought（思考）**:
+结果显示了三个等级的平均订单金额，VIP客户的平均订单金额最高。
 
-**问题**: 有没有出现过拖欠员工工资的情况？
-
-**分析**: 
-1. 使用 generate_series 生成每个员工应该发薪的所有月份
-2. 与实际工资记录进行 LEFT JOIN
-3. 找出没有工资记录的月份
-4. 排除当前月份（因为可能还未发薪）
-
-**SQL**:
-```sql
-WITH employee_months AS (
-    SELECT 
-        e.employee_id,
-        e.employee_name,
-        e.department_name,
-        generate_series(
-            DATE_TRUNC('month', e.hire_date),
-            DATE_TRUNC('month', COALESCE(e.leave_date, CURRENT_DATE)),
-            '1 month'::interval
-        )::DATE as expected_month
-    FROM employees e
-)
-SELECT 
-    em.employee_id,
-    em.employee_name,
-    em.department_name,
-    em.expected_month
-FROM employee_months em
-LEFT JOIN salaries s ON em.employee_id = s.employee_id 
-    AND DATE_TRUNC('month', s.payment_date) = em.expected_month
-WHERE s.salary_id IS NULL
-    AND em.expected_month < DATE_TRUNC('month', CURRENT_DATE)
-ORDER BY em.expected_month DESC, em.employee_name;
+**Action（行动）**:
+```json
+{
+  "thought": "已获得各等级客户的平均订单金额，可以给出完整答案",
+  "action": "answer",
+  "answer": "不同客户等级的平均订单金额如下：VIP客户 1,280.50元，黄金客户 856.30元，白银客户 423.80元。",
+  "is_final": true
+}
 ```
 
----
-
-## 使用指南
-
-### 示例选择策略
-
-根据用户问题的类型，选择最相关的3-5个示例：
-
-1. **简单统计**: 使用示例1-3
-2. **部门分析**: 使用示例2、4、10
-3. **时间范围查询**: 使用示例3、5、8
-4. **工资相关**: 使用示例4、6、11
-5. **排名问题**: 使用示例6、10
-6. **在职时长**: 使用示例7、9
-7. **复杂多步**: 使用示例10、11、12
-
-### 关键技术点总结
-
-- **时间筛选**: EXTRACT(YEAR FROM date), DATE_TRUNC(), BETWEEN
-- **条件聚合**: CASE WHEN ... THEN ... ELSE ... END
-- **窗口函数**: ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)
-- **CTE**: WITH table_name AS (...)
-- **子查询**: WHERE col = (SELECT ...)
-- **序列生成**: generate_series()
-- **空值处理**: COALESCE(), IS NULL, IS NOT NULL
+### 关键学习点
+- **多维度分组**: GROUP BY 可以使用多个字段
+- **过滤 NULL**: WHERE ... IS NOT NULL 避免空值干扰
+- **数值格式化**: ROUND(value, 2) 保留两位小数
+- **结果排序**: ORDER BY 让结果更易读
 
 ---
 
+## 示例5: 分步探索 - 复杂计算
+
+**场景**: 需要多步才能得出结论的问题
+
+**问题**: "哪些产品库存不足（销量大于剩余库存的2倍）？"
+
+### 第 1 轮：先了解数据结构
+
+**Thought（思考）**:
+这是一个相对复杂的问题，需要比较销量和库存。我先了解：
+1. 销量数据在哪里？→ order_items 表
+2. 库存数据在哪里？→ products 表的 stock_quantity 字段
+3. 如何定义"销量"？→ 需要确定统计时间范围，或者统计总销量
+
+让我先查询一下销量数据的情况。
+
+**Action（行动）**:
+```json
+{
+  "thought": "先查询每个产品的总销量和当前库存，了解数据分布情况",
+  "action": "execute_sql",
+  "sql": "SELECT p.product_id, p.product_name, p.stock_quantity, COALESCE(SUM(oi.quantity), 0) as total_sold FROM products p LEFT JOIN order_items oi ON p.product_id = oi.product_id GROUP BY p.product_id, p.product_name, p.stock_quantity ORDER BY total_sold DESC LIMIT 10;",
+  "is_final": false
+}
+```
+
+**执行结果**: 返回前10个产品的销量和库存信息
+
+### 第 2 轮：根据条件筛选
+
+**Thought（思考）**:
+现在我了解了数据结构。接下来筛选出符合条件的产品：销量 > 库存 × 2
+
+**Action（行动）**:
+```json
+{
+  "thought": "筛选出销量大于库存2倍的产品，这些产品可能存在库存不足风险",
+  "action": "execute_sql",
+  "sql": "SELECT p.product_id, p.product_name, p.stock_quantity, COALESCE(SUM(oi.quantity), 0) as total_sold FROM products p LEFT JOIN order_items oi ON p.product_id = oi.product_id GROUP BY p.product_id, p.product_name, p.stock_quantity HAVING COALESCE(SUM(oi.quantity), 0) > p.stock_quantity * 2 ORDER BY total_sold DESC;",
+  "is_final": false
+}
+```
+
+**执行结果**: 返回符合条件的产品列表
+
+### 第 3 轮：给出答案
+
+**Thought（思考）**:
+已经找到了所有库存不足的产品，可以给出答案了。
+
+**Action（行动）**:
+```json
+{
+  "thought": "查询结果显示了所有销量超过库存2倍的产品，可以提供完整答案",
+  "action": "answer",
+  "answer": "发现 X 个产品存在库存不足风险（销量大于库存的2倍），包括：[列出前几个产品名称]。建议及时补货。",
+  "is_final": true
+}
+```
+
+### 关键学习点
+- **渐进式查询**: 先探索数据，再精确筛选
+- **LEFT JOIN**: 保留所有产品，即使没有销售记录
+- **COALESCE**: 处理可能的 NULL 值，设置默认值
+- **HAVING vs WHERE**: HAVING 用于过滤聚合后的结果
+- **不要盲目使用 LIMIT**: 异常检测场景应该返回所有符合条件的记录
+
+---
+
+## 示例6: 时间序列分析 - 窗口函数
+
+**场景**: 比较不同时期的变化
+
+**问题**: "每个客户最近一次订单相比上一次订单金额变化如何？"
+
+### 第 1 轮：使用窗口函数获取历史数据
+
+**Thought（思考）**:
+这需要：
+1. 获取每个客户的订单历史
+2. 使用窗口函数标记每个订单的顺序
+3. 获取当前订单和上一次订单的金额
+4. 计算变化
+
+可以使用 LAG() 窗口函数获取上一条记录。
+
+**Action（行动）**:
+```json
+{
+  "thought": "使用 LAG 窗口函数获取每个客户上一次的订单金额，然后计算变化率",
+  "action": "execute_sql",
+  "sql": "WITH order_comparison AS (SELECT customer_id, order_id, order_date, total_amount, LAG(total_amount) OVER (PARTITION BY customer_id ORDER BY order_date) as prev_amount FROM orders) SELECT customer_id, order_id, total_amount, prev_amount, ROUND((total_amount - prev_amount) / prev_amount * 100, 2) as change_pct FROM order_comparison WHERE prev_amount IS NOT NULL ORDER BY ABS(change_pct) DESC LIMIT 20;",
+  "is_final": false
+}
+```
+
+**执行结果**: 返回订单金额变化最大的20个客户
+
+### 第 2 轮：给出答案
+
+**Thought（思考）**:
+查询结果显示了客户订单金额的变化情况，可以给出分析。
+
+**Action（行动）**:
+```json
+{
+  "thought": "已经计算出各客户的订单金额变化，可以给出答案",
+  "action": "answer",
+  "answer": "订单金额变化分析完成。部分客户的订单金额有显著变化，最大增幅达到X%，最大降幅为Y%。",
+  "is_final": true
+}
+```
+
+### 关键学习点
+- **窗口函数**: LAG（获取上一行）、LEAD（获取下一行）、ROW_NUMBER（行号）、RANK（排名）
+- **PARTITION BY**: 窗口函数的分组依据
+- **ORDER BY（窗口内）**: 决定"上一行"/"下一行"的顺序
+- **CTE (WITH)**: 将复杂查询分步骤，提高可读性
+- **变化率计算**: (new - old) / old × 100
+
+---
+
+## 示例7: 异常检测 - 数据完整性检查
+
+**场景**: 检测数据是否存在异常或缺失
+
+**问题**: "是否有订单包含的产品已经不存在了？"
+
+### 第 1 轮：理解问题并设计检测策略
+
+**Thought（思考）**:
+这是一个数据完整性检查问题。需要：
+1. 找出 order_items 表中引用的所有 product_id
+2. 检查这些 product_id 是否都存在于 products 表中
+3. 使用 LEFT JOIN 找出不匹配的记录
+
+**Action（行动）**:
+```json
+{
+  "thought": "使用 LEFT JOIN 查找订单明细中引用了但产品表中不存在的产品ID",
+  "action": "execute_sql",
+  "sql": "SELECT DISTINCT oi.order_id, oi.product_id FROM order_items oi LEFT JOIN products p ON oi.product_id = p.product_id WHERE p.product_id IS NULL;",
+  "is_final": false
+}
+```
+
+**执行结果**: `[]` （空结果，表示没有异常）或返回异常记录列表
+
+### 第 2 轮：给出结论
+
+**Thought（思考）**:
+查询结果为空，说明所有订单中的产品都在产品表中存在，数据完整性良好。
+
+**Action（行动）**:
+```json
+{
+  "thought": "查询结果为空，表示没有发现数据完整性问题",
+  "action": "answer",
+  "answer": "数据检查完成，所有订单中的产品都在产品库中存在，未发现异常。",
+  "is_final": true
+}
+```
+
+### 关键学习点
+- **数据完整性**: LEFT JOIN + IS NULL 找出左表独有的记录
+- **异常检测**: 不要使用 LIMIT，需要返回所有异常记录
+- **DISTINCT**: 去除重复，避免重复报告同一问题
+- **探索性查询**: 先了解问题规模，再决定详细查询策略
+
+---
+
+## 示例8: 跨期对比分析 - 使用CTE计算年度变化率
+
+**场景**: 比较不同时期的数据变化率（虚构图书馆场景）
+
+**⚠️ 重要提醒**: 
+- 这个示例使用 YEAR_A 和 YEAR_B 作为**抽象占位符**
+- 实际查询时，你必须根据**当前年份{year}**和问题中的相对时间表达式重新计算具体年份
+- **不要直接复制这里的年份数字！**
+
+**问题**: "哪些借阅者从 YEAR_A 到 YEAR_B 借书量增长最快？前5名"
+
+### 第 1 轮：设计跨期对比策略
+
+**Thought（思考）**:
+这是**跨期对比**问题，要比较两个时期的变化：
+
+**【关键步骤1：时间推理】**
+- 假设当前年份是 CURRENT_YEAR
+- 如果问题是"从去年到今年"，那么：
+  - YEAR_A = CURRENT_YEAR - 1（去年）
+  - YEAR_B = CURRENT_YEAR（今年）
+- **必须根据实际情况重新计算！**
+
+**【关键步骤2：技术选择】**
+1. **避免片面比较**：不应该只比较某个单日或单月，应该比较整个时期的总量或平均值
+2. **技术选择**：使用两个CTE（公共表表达式）分别计算各期数据，然后INNER JOIN
+3. **计算逻辑**：
+   - CTE1: 计算 YEAR_A 的总量
+   - CTE2: 计算 YEAR_B 的总量
+   - JOIN: 只保留两期都有数据的对象
+   - 计算增长率：(YEAR_B值 - YEAR_A值) / YEAR_A值 * 100
+   - ORDER BY 增长率降序，LIMIT N
+
+**Action（行动）**:
+```json
+{
+  "thought": "当前年份是CURRENT_YEAR，根据问题计算出YEAR_A和YEAR_B。使用两个CTE分别统计两年的数据，JOIN后计算增长率，按增长率降序排序",
+  "action": "execute_sql",
+  "sql": "WITH period_a AS (SELECT entity_id, AGG_FUNCTION(metric) AS value_a FROM table WHERE EXTRACT(YEAR FROM date_column) = YEAR_A GROUP BY entity_id), period_b AS (SELECT entity_id, AGG_FUNCTION(metric) AS value_b FROM table WHERE EXTRACT(YEAR FROM date_column) = YEAR_B GROUP BY entity_id) SELECT e.name, pa.value_a, pb.value_b, ROUND((pb.value_b - pa.value_a)::NUMERIC / pa.value_a * 100, 2) AS growth_rate FROM period_a pa JOIN period_b pb ON pa.entity_id = pb.entity_id JOIN entity_table e ON pa.entity_id = e.entity_id ORDER BY growth_rate DESC LIMIT N;",
+  "is_final": false
+}
+```
+
+**注意**: 
+- 上面的SQL是**模板示例**，YEAR_A、YEAR_B、table、entity_id等都需要替换为实际值
+- 实际使用时必须：
+  1. 根据当前日期{year}计算具体年份
+  2. 根据实际Schema使用正确的表名和字段名
+
+**执行结果**: 返回N行数据
+
+### 第 2 轮：给出答案
+
+**Thought（思考）**:
+查询结果显示了增长最快的对象，包含两期的数据和增长率，可以直接回答。
+
+**Action（行动）**:
+```json
+{
+  "thought": "数据完整，包含YEAR_A和YEAR_B两期的数据和增长率，可以直接回答",
+  "action": "answer",
+  "answer": "从YEAR_A到YEAR_B增长最快的对象是：[根据实际数据填写具体答案]",
+  "is_final": true
+}
+```
+
+### 关键学习点
+- **整期对比**：比较完整时期（整年、整季度）的总量或平均值，而非单点
+- **CTE模式**：用WITH语句分步计算，逻辑清晰，易于调试
+- **INNER JOIN**：只保留两期都有数据的对象，确保可比性
+- **变化率公式**：(新值 - 旧值) / 旧值 * 100
+
+---
+
+## 示例9: 数据完整性检测 - 找出缺失的记录
+
+**场景**: 检测应该存在但实际缺失的数据（虚构设备维护场景）
+
+**问题**: "有哪些设备的月度维护记录不完整？"
+
+### 第 1 轮：设计完整性检测策略
+
+**Thought（思考）**:
+这是**数据完整性检测**，要找"应该有但实际没有"的记录：
+1. **理解需求**：设备从启用日期开始，每个月都应该有维护记录，如果某月缺失就是不完整
+2. **检测思路**：
+   - 第一步：生成"应该有"的完整序列（每台设备的所有应维护月份）
+   - 第二步：LEFT JOIN实际维护记录
+   - 第三步：WHERE ... IS NULL 找出缺失部分
+3. **技术工具**：
+   - `generate_series`：生成连续的月份序列
+   - `DATE_TRUNC('month', date)`：日期截断到月份
+   - `COALESCE(end_date, CURRENT_DATE)`：处理仍在用的设备
+4. **不用LIMIT**：这是异常检测，需要找出**所有**缺失记录
+
+**Action（行动）**:
+```json
+{
+  "thought": "用generate_series生成每台设备应该有的所有维护月份，LEFT JOIN实际记录，IS NULL即为缺失",
+  "action": "execute_sql",
+  "sql": "WITH expected_maintenance AS (SELECT e.equipment_id, e.equipment_name, generate_series(DATE_TRUNC('month', e.install_date), DATE_TRUNC('month', COALESCE(e.retire_date, CURRENT_DATE)), '1 month'::interval)::DATE AS expected_month FROM equipment e) SELECT em.equipment_id, em.equipment_name, TO_CHAR(em.expected_month, 'YYYY-MM') AS missing_month FROM expected_maintenance em LEFT JOIN maintenance_records mr ON em.equipment_id = mr.equipment_id AND DATE_TRUNC('month', mr.maintenance_date) = em.expected_month WHERE mr.record_id IS NULL AND em.expected_month < DATE_TRUNC('month', CURRENT_DATE) ORDER BY em.equipment_id, em.expected_month;",
+  "is_final": false
+}
+```
+
+**执行结果**: 返回18条缺失记录
+
+### 第 2 轮：分析并回答
+
+**Thought（思考）**:
+查询发现18条缺失的维护记录，涉及多台设备。这是完整性问题，需要全部列出。
+
+**Action（行动）**:
+```json
+{
+  "thought": "发现18条缺失记录，需要完整报告所有异常",
+  "action": "answer",
+  "answer": "有多台设备的维护记录不完整。共发现18个缺失的维护月份，涉及[具体设备和月份]。建议补充这些缺失的维护记录。",
+  "is_final": true
+}
+```
+
+### 关键学习点
+- **序列生成**：`generate_series(start, end, interval)` 生成连续序列（日期、数字）
+- **LEFT JOIN + IS NULL**：经典的"找缺失"模式
+- **DATE_TRUNC**：统一时间粒度（月、日、年）
+- **COALESCE**：处理NULL，提供默认值
+- **完整性检测不用LIMIT**：必须返回所有异常，不能截断
+
+---
+
+## 通用 SQL 技术工具箱
+
+这些是PostgreSQL的**通用技术工具**，你应该根据问题类型选择合适的工具组合：
+
+### 基础操作
+| 场景 | 技术选择 | 关键语法 | 适用场景 |
+|-----|---------|---------|---------|
+| 简单统计 | 聚合函数 | COUNT(), SUM(), AVG(), MAX(), MIN() | 计数、求和、平均等 |
+| 条件筛选 | WHERE | WHERE column = value, WHERE column > value | 按条件过滤行 |
+| NULL 判断 | IS NULL / IS NOT NULL | WHERE column IS NULL | 判断空值 |
+| 去重 | DISTINCT | SELECT DISTINCT column FROM table | 去除重复值 |
+| 排序 | ORDER BY | ORDER BY column DESC/ASC | 结果排序 |
+| 限制行数 | LIMIT | LIMIT 10 | 仅用于排名，不用于异常检测 |
+
+### 时间处理
+| 场景 | 技术选择 | 关键语法 | 适用场景 |
+|-----|---------|---------|---------|
+| 时间筛选 | 日期比较 | WHERE date >= '2025-01-01' AND date <= '2025-12-31' | 时间范围过滤 |
+| 时间提取 | EXTRACT | EXTRACT(YEAR FROM date), EXTRACT(MONTH FROM date) | 提取年/月/日 |
+| 时间截断 | DATE_TRUNC | DATE_TRUNC('month', date) | 截断到月/日/年 |
+| 时间序列 | generate_series | generate_series(start, end, '1 month'::interval) | 生成连续时间点 |
+
+**⚠️ 时间概念关键原则**:
+- **"最近一个月"在统计场景中 = 最后一个完整月份**（如当前是1月25日，应使用12月）
+- **相对年份必须基于当前年份重新计算**（不要照搬示例中的具体年份）
+- **跨期对比使用整期数据**（整年vs整年，不是单月vs单月）
+- **在Thought中明确展示时间推理过程**，防止锚定效应
+
+### 多表和分组
+| 场景 | 技术选择 | 关键语法 | 适用场景 |
+|-----|---------|---------|---------|
+| 多表关联 | JOIN | INNER JOIN, LEFT JOIN, RIGHT JOIN | 关联多个表 |
+| 分组聚合 | GROUP BY | GROUP BY column HAVING SUM(...) > value | 分组统计 |
+| 条件分组 | CASE WHEN | CASE WHEN condition THEN value ELSE other END | 条件分类 |
+| 默认值 | COALESCE | COALESCE(nullable_column, 0) | 处理NULL值 |
+
+### 高级技术
+| 场景 | 技术选择 | 关键语法 | 适用场景 |
+|-----|---------|---------|---------|
+| 多步查询 | CTE (WITH) | WITH step1 AS (...) SELECT * FROM step1 | 复杂逻辑分步，特别适合跨期对比 |
+| 窗口函数 | OVER | ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...) | 排名、累计等 |
+| 找缺失数据 | generate_series + LEFT JOIN | 见示例9 | 数据完整性检测 |
+| 字符串匹配 | LIKE | WHERE name LIKE '%关键词%' | 模糊搜索 |
+| 范围查询 | BETWEEN | WHERE value BETWEEN min AND max | 范围内查询 |
+| 列表匹配 | IN | WHERE column IN (value1, value2, value3) | 多值匹配 |
+
+### 技术组合策略
+- **跨期对比** = CTE（分期统计）+ JOIN（对比）+ 计算变化率
+- **数据完整性检测** = generate_series（生成预期）+ LEFT JOIN（匹配实际）+ IS NULL（找缺失）
+- **复杂排名** = CTE（预处理）+ 窗口函数（排名）+ WHERE（筛选）
+- **条件统计** = CASE WHEN（分类）+ GROUP BY（分组）+ 聚合函数（统计）
+
+---
+
+## ReAct 框架总结
+
+### 何时需要多轮？
+
+| 问题复杂度 | 建议轮数 | 策略 |
+|-----------|---------|------|
+| 简单查询（单表、单条件） | 1-2 轮 | 直接查询 + 回答 |
+| 中等复杂（多表、聚合） | 2-3 轮 | 设计查询 + 验证 + 回答 |
+| 复杂分析（多步骤、比较） | 3-5 轮 | 探索 + 多次查询 + 综合分析 + 回答 |
+
+### 每轮的推理要点
+
+**Thought（思考）阶段**:
+1. 我已经知道了什么？（基于历史结果）
+2. 还需要什么信息？（问题缺口）
+3. 下一步应该做什么？（策略选择）
+4. **如果涉及时间**：当前年份是什么？相对时间如何计算？是否需要完整周期？
+
+**Action（行动）阶段**:
+1. 如果需要数据 → `action: "execute_sql"`
+2. 如果可以回答 → `action: "answer"`
+3. SQL 要清晰、完整、可执行
+
+**关键原则**:
+- ✅ 从简单到复杂，渐进式探索
+- ✅ 每次只做一件事，避免过度复杂
+- ✅ 基于历史结果调整策略
+- ✅ 及时给出答案，不要过度查询
+- ✅ Thought 要展示推理过程，不是简单重复SQL
+- ✅ **时间推理**：在Thought中明确展示时间计算（"当前年份X，去年=X-1"）；"最近一个月"=最后完整月份
+- ✅ **跨期对比**：用整期的总量/平均值，不要单点对比；用CTE分步计算后JOIN
+- ✅ **找缺失数据**：用 generate_series 生成预期序列，LEFT JOIN 实际数据，IS NULL 找缺失
+- ✅ **排名查询**：用 LIMIT；**异常检测**：不用 LIMIT，返回全部
+- ❌ 不要在 SQL 中使用不存在的表或字段
+- ❌ 不要输出多条 SQL，一次一条
+- ❌ 不要照搬示例中的具体年份，必须根据当前年份重新计算
+- ❌ 不要用进行中的不完整月份进行统计（如1月25日不要统计1月，应用12月）
+- ❌ 不要在完整性检测中简化为"检查最后一次"，要逐一检查所有应有记录
+
+---
+
+## 输出格式规范
+
+### JSON 格式要求
+```json
+{
+  "thought": "你的推理过程：分析当前情况、选择策略、说明理由",
+  "action": "execute_sql 或 answer",
+  "sql": "如果 action 是 execute_sql，填写完整的 SQL 语句",
+  "answer": "如果 action 是 answer，填写用户友好的自然语言答案",
+  "is_final": false 或 true
+}
+```
+
+### 注意事项
+- ✅ 输出有效的 JSON，不要有注释
+- ✅ SQL 以分号结尾
+- ✅ 不要在 sql 字段中包含 ```sql ``` 标记
+- ✅ thought 要简洁但信息完整
+- ✅ answer 要直接回答用户问题，用自然语言
+
+---
+
+**文件版本**: 4.0（通用推理方法教学版）
 **最后更新**: 2026-01-25
+**设计原则**: 授人以渔，而非授人以鱼

@@ -39,14 +39,22 @@ def print_help():
        - 复杂分析: "有没有拖欠工资的情况？"
     
     3. 特殊命令:
-       - help: 显示帮助信息
-       - test: 运行10个测试问题
-       - exit/quit: 退出程序
+       - help   : 显示帮助信息
+       - test   : 运行10个测试问题
+       - stream : 切换流式/标准输出模式
+       - exit   : 退出程序（也可使用 quit 或 q）
+    
+    4. Agent 特性:
+       - 多轮 ReAct 推理：自动分析、查询、迭代
+       - 智能错误修正：SQL 错误自动重试
+       - 流式输出：实时查看推理过程
+       - 时间智能：自动处理"今年"、"去年"等表达
     
     示例问题:
        > 有多少在职员工？
        > 去年A部门的平均工资是多少？
        > 工资最高的前10名员工是谁？
+       > 从去年到今年涨薪幅度最大的10位员工是谁？
     """
     print(help_text)
 
@@ -73,7 +81,7 @@ def check_environment():
     
     # 检查必需的环境变量
     required_vars = [
-        'KIMI_API_KEY',
+        'MOONSHOT_API_KEY',  # 更新为正确的环境变量名
         'DB_HOST',
         'DB_NAME',
         'DB_USER',
@@ -127,43 +135,44 @@ def test_database_connection():
         return False
 
 
-def run_test_questions():
+def run_test_questions(agent):
     """运行10个测试问题"""
     print("\n" + "="*70)
     print("运行测试问题集...")
     print("="*70)
     
     try:
-        from tests.test_questions import TEST_QUESTIONS, print_all_questions
-        print_all_questions()
+        from tests.test_questions import TEST_QUESTIONS
         
-        # TODO: 实现 Agent 后，实际运行这些问题
-        print("\n注意: Agent 模块尚未实现，无法执行实际查询")
-        print("请先完成 core/agent.py 的开发")
+        for i, test in enumerate(TEST_QUESTIONS, 1):
+            question = test['question']
+            print(f"\n问题 {i}/{len(TEST_QUESTIONS)}: {question}")
+            print("-" * 70)
+            
+            try:
+                result = agent.query(question)
+                
+                if result['success']:
+                    print(f"✓ 答案: {result['answer']}")
+                    print(f"  迭代次数: {result['iterations']}, 耗时: {result['total_time']:.2f}秒")
+                else:
+                    print(f"✗ 查询失败: {result.get('error', '未知错误')}")
+                    
+            except Exception as e:
+                print(f"✗ 执行出错: {e}")
+        
+        print("\n" + "="*70)
+        print("测试完成！")
+        print("="*70)
         
     except Exception as e:
         print(f"❌ 运行测试失败: {e}")
 
 
-def interactive_mode():
+def interactive_mode(agent, enable_stream=False):
     """交互模式"""
-    print("\n进入交互模式（输入 'help' 查看帮助，输入 'exit' 退出）\n")
-    
-    # TODO: 实现 Agent 后取消注释
-    # from core.agent import ERPAgent
-    # 
-    # config = {
-    #     'kimi_api_key': os.getenv('KIMI_API_KEY'),
-    #     'db_config': {
-    #         'host': os.getenv('DB_HOST'),
-    #         'port': int(os.getenv('DB_PORT', 5432)),
-    #         'database': os.getenv('DB_NAME'),
-    #         'user': os.getenv('DB_USER'),
-    #         'password': os.getenv('DB_PASSWORD')
-    #     }
-    # }
-    # 
-    # agent = ERPAgent(config)
+    mode_text = "流式模式" if enable_stream else "标准模式"
+    print(f"\n进入交互模式 - {mode_text}（输入 'help' 查看帮助，输入 'exit' 退出）\n")
     
     while True:
         try:
@@ -182,32 +191,79 @@ def interactive_mode():
                 continue
             
             elif question.lower() == 'test':
-                run_test_questions()
+                run_test_questions(agent)
                 continue
             
-            # TODO: 实现 Agent 后取消注释
-            # print("\n正在处理您的问题...")
-            # result = agent.query(question)
-            # 
-            # if result['success']:
-            #     print(f"\n答案: {result['answer']}")
-            #     print(f"查询迭代次数: {result['iterations']}")
-            # else:
-            #     print(f"\n❌ 查询失败: {result.get('error', '未知错误')}")
+            elif question.lower() == 'stream':
+                enable_stream = not enable_stream
+                mode_text = "流式模式" if enable_stream else "标准模式"
+                print(f"\n已切换到 {mode_text}")
+                continue
             
-            print("\n注意: Agent 模块尚未实现")
-            print("请先完成以下模块的开发:")
-            print("  - core/agent.py")
-            print("  - core/sql_generator.py")
-            print("  - core/sql_executor.py")
-            print("  - core/result_analyzer.py")
-            print("  - utils/date_utils.py")
+            # 执行查询
+            print("\n正在处理您的问题...")
+            
+            if enable_stream:
+                # 流式输出
+                print()
+                for chunk in agent.query_stream(question):
+                    chunk_type = chunk['type']
+                    
+                    if chunk_type == 'iteration_start':
+                        print(f"\n[第 {chunk['iteration']} 轮]")
+                    
+                    elif chunk_type == 'thought':
+                        print(f"💭 思考: {chunk['thought']}")
+                    
+                    elif chunk_type == 'action':
+                        action_emoji = "⚙️" if chunk['action'] == 'execute_sql' else "💬"
+                        print(f"{action_emoji} 动作: {chunk['action']}")
+                    
+                    elif chunk_type == 'sql_executing':
+                        sql_preview = chunk['sql'][:100] + "..." if len(chunk['sql']) > 100 else chunk['sql']
+                        print(f"📊 执行 SQL: {sql_preview}")
+                    
+                    elif chunk_type == 'sql_result':
+                        result_data = chunk['result']
+                        if result_data['success']:
+                            print(f"✓ 查询成功，返回 {result_data['row_count']} 行")
+                        else:
+                            print(f"✗ 查询失败: {result_data['error']}")
+                    
+                    elif chunk_type == 'answer':
+                        print(f"\n💬 答案: {chunk['answer']}")
+                    
+                    elif chunk_type == 'final':
+                        print(f"\n{'='*60}")
+                        if chunk['success']:
+                            print(f"✓ 查询完成")
+                            print(f"   最终答案: {chunk['answer']}")
+                        else:
+                            print(f"✗ 查询失败: {chunk.get('error', '未知错误')}")
+                        print(f"   迭代次数: {chunk['iterations']}, 总耗时: {chunk['total_time']:.2f}秒")
+                        print(f"{'='*60}")
+                    
+                    elif chunk_type == 'error':
+                        print(f"✗ 错误: {chunk['error']}")
+            else:
+                # 标准输出
+                result = agent.query(question)
+                
+                print(f"\n{'='*60}")
+                if result['success']:
+                    print(f"✓ 答案: {result['answer']}")
+                    print(f"   迭代次数: {result['iterations']}, 总耗时: {result['total_time']:.2f}秒")
+                else:
+                    print(f"✗ 查询失败: {result.get('error', '未知错误')}")
+                print(f"{'='*60}")
             
         except KeyboardInterrupt:
             print("\n\n中断操作，正在退出...")
             break
         except Exception as e:
             print(f"\n❌ 发生错误: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 def main():
@@ -229,11 +285,30 @@ def main():
     
     print("\n✓ 所有检查通过，准备就绪！\n")
     
+    # 初始化 Agent
+    print("正在初始化 ERP Agent...")
+    try:
+        from erp_agent.core import ERPAgent
+        from erp_agent.config import get_llm_config, get_database_config, get_agent_config
+        
+        llm_config = get_llm_config()
+        db_config = get_database_config()
+        agent_config = get_agent_config()
+        
+        agent = ERPAgent(llm_config, db_config, agent_config)
+        print("✓ ERP Agent 初始化成功\n")
+        
+    except Exception as e:
+        print(f"❌ 初始化 Agent 失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+    
     # 显示帮助
     print_help()
     
     # 进入交互模式
-    interactive_mode()
+    interactive_mode(agent, enable_stream=False)
 
 
 if __name__ == '__main__':

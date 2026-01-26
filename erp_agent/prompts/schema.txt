@@ -113,7 +113,7 @@ leave_date: '2024-06-15'
 
 3. **年度涨薪**: 每年1月份固定涨薪7.5%
 
-4. **特殊涨薪**: 部分员工在2025年6月有40%的特殊涨薪
+4. **特殊涨薪**: 个别员工在某些月份可能有额外的涨薪调整
 
 #### 示例数据
 
@@ -140,201 +140,91 @@ employees (1) ←──────── (N) salaries
 
 ---
 
-## 数据统计概览
+## 数据规模概览
 
-### 员工统计
-- **员工总数**: 100人
-- **在职员工**: 约88人
-- **离职员工**: 约12人
-
-### 部门分布
-- **A部门**: 25人（包含离职3人）
-- **B部门**: 23人（包含离职3人）
-- **C部门**: 20人（包含离职2人）
-- **D部门**: 18人（包含离职2人）
-- **E部门**: 14人（包含离职1人）
-
-### 职级分布
-- **1级**: 约10人（新员工）
-- **2-4级**: 约40人（初中级员工）
-- **5-7级**: 约35人（中高级员工）
-- **8-10级**: 约15人（高级员工）
-
-### 工资记录
-- **记录总数**: 约5000+条
-- **时间跨度**: 2021年至2026年1月
-- **记录频率**: 每月25号发放
-
----
-
-## 常见查询场景和注意事项
-
-### 1. 查询在职员工
-```sql
--- 正确做法
-SELECT * FROM employees WHERE leave_date IS NULL;
-
--- 错误做法（不要用）
-SELECT * FROM employees WHERE leave_date = NULL;
-```
-
-### 2. 计算员工在职时长
-```sql
--- 在职员工：用当前日期减去入职日期
-CASE 
-    WHEN leave_date IS NULL 
-    THEN CURRENT_DATE - hire_date
-    ELSE leave_date - hire_date
-END
-```
-
-### 3. 按月统计工资
-```sql
--- 使用 DATE_TRUNC 按月分组
-SELECT 
-    DATE_TRUNC('month', payment_date) as month,
-    AVG(salary_amount) as avg_salary
-FROM salaries
-GROUP BY DATE_TRUNC('month', payment_date);
-```
-
-### 4. 计算特定年份的数据
-```sql
--- 使用 EXTRACT 函数提取年份
-SELECT * 
-FROM salaries 
-WHERE EXTRACT(YEAR FROM payment_date) = 2025;
-```
-
-### 5. 关联查询员工和工资
-```sql
--- 标准 JOIN 写法
-SELECT 
-    e.employee_name,
-    e.department_name,
-    s.payment_date,
-    s.salary_amount
-FROM employees e
-JOIN salaries s ON e.employee_id = s.employee_id
-WHERE e.leave_date IS NULL;  -- 仅查询在职员工
-```
-
-### 6. 查询最新工资
-```sql
--- 使用子查询找到每个员工的最新工资
-SELECT e.*, s.salary_amount
-FROM employees e
-JOIN salaries s ON e.employee_id = s.employee_id
-WHERE s.payment_date = (
-    SELECT MAX(payment_date)
-    FROM salaries
-    WHERE employee_id = e.employee_id
-);
-```
-
-### 7. 计算同比/环比涨薪
-```sql
--- 使用 CTE 或窗口函数
-WITH salary_data AS (
-    SELECT 
-        employee_id,
-        EXTRACT(YEAR FROM payment_date) as year,
-        AVG(salary_amount) as avg_salary
-    FROM salaries
-    GROUP BY employee_id, EXTRACT(YEAR FROM payment_date)
-)
-SELECT 
-    current.employee_id,
-    current.year,
-    current.avg_salary as current_salary,
-    prev.avg_salary as prev_salary,
-    current.avg_salary - prev.avg_salary as increase
-FROM salary_data current
-LEFT JOIN salary_data prev 
-    ON current.employee_id = prev.employee_id 
-    AND current.year = prev.year + 1;
-```
-
-### 8. 检测拖欠工资
-```sql
--- 生成应发工资月份，检查是否有缺失
-WITH employee_months AS (
-    SELECT 
-        e.employee_id,
-        generate_series(
-            DATE_TRUNC('month', e.hire_date),
-            DATE_TRUNC('month', COALESCE(e.leave_date, CURRENT_DATE)),
-            '1 month'::interval
-        )::DATE as expected_month
-    FROM employees e
-)
-SELECT em.*
-FROM employee_months em
-LEFT JOIN salaries s 
-    ON em.employee_id = s.employee_id 
-    AND DATE_TRUNC('month', s.payment_date) = em.expected_month
-WHERE s.salary_id IS NULL
-    AND em.expected_month < DATE_TRUNC('month', CURRENT_DATE);
-```
-
----
-
-## 数据质量说明
-
-### 已知的数据特征
-
-1. **拖欠工资记录**: 
-   - 员工 EMP088（毛不易）在 2024年7月 没有工资记录
-   - 员工 EMP092（王力宏）在 2023年11月 没有工资记录
-
-2. **高涨薪员工**: 8名员工在2025年6月有40%的特殊涨薪
-   - EMP003, EMP011, EMP029, EMP032, EMP055, EMP059, EMP077, EMP089
-
-3. **确定性数据**: 
-   - 本数据集使用确定性算法生成
-   - 每次重新生成数据，结果完全一致
-   - 适合用于测试和验证
+- **员工总数**: 约100人
+- **在职员工比例**: 约85%-90%
+- **部门数量**: 5个部门（A、B、C、D、E）
+- **职级范围**: 1-10级
+- **工资记录**: 每月25号发放，覆盖2021年至今
+- **数据时间跨度**: 2021-01-01 至 2026-01-25
 
 ---
 
 ## 时间相关术语映射
 
-当用户使用时间相关词汇时，请参考以下映射（假设当前日期为 2026-01-25）:
+当用户使用时间相关词汇时，你需要自己计算对应的日期范围。以下是常见表达式的处理方法：
 
-| 用户表达        | 对应时间范围                  | SQL 条件示例                          |
-|----------------|------------------------------|--------------------------------------|
-| 今年           | 2026年                       | EXTRACT(YEAR FROM date) = 2026       |
-| 去年           | 2025年                       | EXTRACT(YEAR FROM date) = 2025       |
-| 前年           | 2024年                       | EXTRACT(YEAR FROM date) = 2024       |
-| 最近一年       | 2025-01-25 至 2026-01-25     | date >= '2025-01-25'                 |
-| 本月           | 2026年1月                    | DATE_TRUNC('month', date) = '2026-01-01' |
-| 上个月         | 2025年12月                   | DATE_TRUNC('month', date) = '2025-12-01' |
-| 最近完整月     | 2025年12月                   | DATE_TRUNC('month', date) = '2025-12-01' |
+### 相对年份表达
+| 用户表达 | 推理方法 | 日期范围计算 |
+|---------|---------|-------------|
+| 今年    | 使用当前年份 | YYYY-01-01 到 YYYY-12-31 |
+| 去年    | 当前年份 - 1 | (YYYY-1)-01-01 到 (YYYY-1)-12-31 |
+| 前年    | 当前年份 - 2 | (YYYY-2)-01-01 到 (YYYY-2)-12-31 |
+| 2023年  | 直接使用指定年份 | 2023-01-01 到 2023-12-31 |
 
----
+### 相对月份表达
+| 用户表达 | 推理方法 | 日期范围计算 |
+|---------|---------|-------------|
+| 今年3月  | 当前年份 + 指定月份 | YYYY-03-01 到 YYYY-03-31 |
+| 去年12月 | (当前年份-1) + 指定月份 | (YYYY-1)-12-01 到 (YYYY-1)-12-31 |
+| 本月    | 当前年月 | YYYY-MM-01 到 YYYY-MM-DD |
+| 上个月  | 当前月 - 1（跨年注意） | 见说明 |
 
-## 注意事项
+### 季度表达
+| 用户表达 | 推理方法 | 日期范围计算 |
+|---------|---------|-------------|
+| 今年第一季度 | 当前年份 Q1 | YYYY-01-01 到 YYYY-03-31 |
+| 去年第二季度 | (当前年份-1) Q2 | (YYYY-1)-04-01 到 (YYYY-1)-06-30 |
+| 2023年第二季度 | 指定年份 Q2 | 2023-04-01 到 2023-06-30 |
 
-1. **NULL 值处理**: 使用 `IS NULL` 或 `IS NOT NULL`，不要使用 `= NULL`
-2. **日期比较**: 使用标准日期格式 'YYYY-MM-DD'
-3. **金额精度**: 工资金额使用 DECIMAL(10,2)，保留两位小数
-4. **时区**: 数据库使用本地时区，日期计算注意时区影响
-5. **性能优化**: 利用已建立的索引，避免全表扫描
-6. **权限限制**: 查询用户仅有 SELECT 权限，不能进行 INSERT/UPDATE/DELETE 操作
+### 相对时间区间
+| 用户表达 | 推理方法 | 计算说明 |
+|---------|---------|---------|
+| 最近N个月 | 当前日期往前推N个月 | 例如当前2026-01-25，最近3个月约为2025-10-25到2026-01-25 |
+| 最近一年 | 当前日期往前推365天 | date >= CURRENT_DATE - INTERVAL '365 days' |
+| 一年内 | 当前日期往前推12个月 | date >= CURRENT_DATE - INTERVAL '12 months' |
+| 一年到两年 | 当前日期往前推12-24个月 | date BETWEEN CURRENT_DATE - INTERVAL '24 months' AND CURRENT_DATE - INTERVAL '12 months' |
 
----
+### SQL 查询建议
 
-## 数据库连接信息（示例）
+**推荐做法**：在 SQL 中使用计算好的具体日期
+```sql
+-- 好的做法：使用具体日期
+WHERE payment_date BETWEEN '2025-01-01' AND '2025-12-31'
 
-```python
-DB_CONFIG = {
-    'host': 'localhost',
-    'port': 5432,
-    'database': 'erp_agent_db',
-    'user': 'erp_agent_user',  # 只读用户
-    'password': 'erp_agent_2026'
-}
+-- 也可以：使用年份提取
+WHERE EXTRACT(YEAR FROM payment_date) = 2025
 ```
+
+**相对时间区间查询**：
+```sql
+-- 最近完整月份（上个月）的工资
+WHERE DATE_TRUNC('month', payment_date) = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')
+
+-- 入职时间在一年内的员工
+WHERE hire_date >= CURRENT_DATE - INTERVAL '1 year'
+```
+
+---
+
+## PostgreSQL 特性说明
+
+### 数据类型注意事项
+- **NULL 值判断**: 必须使用 `IS NULL` 或 `IS NOT NULL`，不能使用 `= NULL`
+- **日期格式**: 标准格式为 'YYYY-MM-DD'
+- **金额精度**: DECIMAL(10,2) 保留两位小数
+
+### 常用函数
+- **时间函数**: EXTRACT(), DATE_TRUNC(), CURRENT_DATE
+- **聚合函数**: COUNT(), SUM(), AVG(), MAX(), MIN()
+- **窗口函数**: ROW_NUMBER(), RANK(), DENSE_RANK() OVER (...)
+- **序列生成**: generate_series()
+- **空值处理**: COALESCE()
+
+### 权限说明
+- 查询用户仅有 **SELECT** 权限
+- 不能进行 INSERT、UPDATE、DELETE、DROP 等修改操作
 
 ---
 

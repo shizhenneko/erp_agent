@@ -4,14 +4,17 @@
 
 ## 📋 项目概述
 
-本项目实现了一个智能 Agent，能够：
+本项目实现了一个基于 **ReAct (Reasoning + Acting)** 范式的智能 Agent，能够：
 
-- 理解用户用自然语言表达的数据查询需求
-- 自动生成准确的 PostgreSQL SQL 查询语句
-- 执行查询并分析结果
-- 将查询结果转换为自然语言答案
-- 支持复杂的时间表达式（如"今年"、"去年"、"最近三个月"）
-- 自动错误修正和多轮查询
+- ✅ 理解用户用自然语言表达的数据查询需求
+- ✅ 自动生成准确的 PostgreSQL SQL 查询语句
+- ✅ 执行查询并分析结果
+- ✅ 将查询结果转换为自然语言答案
+- ✅ 支持复杂的时间表达式（如"今年"、"去年"、"最近三个月"）
+- ✅ 自动错误修正和多轮查询
+- ✅ 支持流式输出，实时展示推理过程
+
+**项目状态**: ✅ Core 模块开发完成，可以开始测试使用！
 
 ## 🏗 系统架构
 
@@ -107,9 +110,26 @@ python generate_test_data.py
 cp .env.example .env
 ```
 
-编辑 `.env` 文件，填写：
-- Kimi API Key（从 https://platform.moonshot.cn/ 获取）
-- 数据库连接信息
+编辑 `.env` 文件，填写必需的配置：
+
+```bash
+# Kimi API 配置（从 https://platform.moonshot.cn/ 获取）
+MOONSHOT_API_KEY=your_api_key_here
+MOONSHOT_BASE_URL=https://api.moonshot.cn/v1
+MOONSHOT_MODEL=kimi-k2
+
+# 数据库连接信息
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=erp_agent_db
+DB_USER=erp_agent_user
+DB_PASSWORD=your_password
+
+# Agent 配置（可选）
+MAX_ITERATIONS=5
+LOG_LEVEL=INFO
+LOG_FILE=logs/agent.log
+```
 
 ### 4. 运行测试
 
@@ -153,12 +173,14 @@ python main.py
 
 ### 核心能力
 
+- ✅ **ReAct 范式**: 完整实现思考-行动-观察循环
 - ✅ **智能时间解析**: 自动理解"今年"、"去年"等相对时间表达
 - ✅ **Few-shot 学习**: 通过示例提高 SQL 生成准确率
 - ✅ **错误自动修正**: 发现错误后自动重试并修正
-- ✅ **多轮查询**: 复杂问题自动拆解为多个查询步骤
+- ✅ **多轮迭代**: 复杂问题自动拆解为多个查询步骤
+- ✅ **流式输出**: 实时查看 Agent 的推理和执行过程
 - ✅ **安全检查**: 仅允许 SELECT 查询，防止数据修改
-- ✅ **结果验证**: 自动检查查询结果的合理性
+- ✅ **完整日志**: 详细记录所有执行过程
 
 ## 📊 10个测试问题
 
@@ -208,37 +230,79 @@ python main.py
 ### Python API
 
 ```python
-from core.agent import ERPAgent
+from erp_agent.core import ERPAgent
+from erp_agent.config import get_llm_config, get_database_config
 
-# 初始化 Agent
-config = {
-    'kimi_api_key': 'your_api_key',
-    'db_config': {
-        'host': 'localhost',
-        'database': 'erp_agent_db',
-        'user': 'erp_agent_user',
-        'password': 'erp_agent_2026'
-    }
-}
+# 初始化 Agent（使用环境变量配置）
+llm_config = get_llm_config()
+db_config = get_database_config()
+agent = ERPAgent(llm_config, db_config)
 
-agent = ERPAgent(config)
-
-# 查询
+# 标准查询
 result = agent.query("有多少在职员工？")
 print(result['answer'])
+print(f"迭代次数: {result['iterations']}")
+
+# 流式查询（实时查看推理过程）
+for chunk in agent.query_stream("每个部门分别有多少在职员工？"):
+    if chunk['type'] == 'thought':
+        print(f"💭 思考: {chunk['thought']}")
+    elif chunk['type'] == 'sql_executing':
+        print(f"📊 执行 SQL: {chunk['sql']}")
+    elif chunk['type'] == 'answer':
+        print(f"💬 答案: {chunk['answer']}")
 ```
 
 ### CLI 使用
 
 ```bash
+# 运行交互式界面
+python -m erp_agent.main
+
+# 或
+cd erp_agent
 python main.py
 
-> 请输入您的问题: 有多少在职员工？
-正在分析问题...
-正在生成 SQL...
-正在执行查询...
+# 交互命令
+> 有多少在职员工？          # 直接提问
+> help                       # 查看帮助
+> test                       # 运行 10 个测试问题
+> stream                     # 切换流式/标准输出模式
+> exit                       # 退出
 
-答案: 公司目前有 88 名在职员工。
+# 示例输出（标准模式）
+> 有多少在职员工？
+正在处理您的问题...
+
+============================================================
+✓ 答案: 公司目前有 88 名在职员工。
+   迭代次数: 2, 总耗时: 3.45秒
+============================================================
+
+# 示例输出（流式模式）
+> stream
+已切换到 流式模式
+
+> 每个部门分别有多少在职员工？
+正在处理您的问题...
+
+[第 1 轮]
+💭 思考: 这是一个按部门分组统计在职员工数量的查询...
+⚙️ 动作: execute_sql
+📊 执行 SQL: SELECT department_name, COUNT(*) as count...
+✓ 查询成功，返回 5 行
+
+[第 2 轮]
+💭 思考: 查询结果已获取，可以生成最终答案
+💬 动作: answer
+
+💬 答案: 各部门的在职员工数量如下：A部门 18人，B部门 17人...
+
+============================================================
+✓ 查询完成
+   最终答案: 各部门的在职员工数量如下...
+   迭代次数: 2, 总耗时: 4.23秒
+============================================================
 ```
 
 ## 🐛 故障排除
@@ -262,10 +326,14 @@ python main.py
 
 ## 📚 参考文档
 
-- [Kimi API 文档](https://platform.moonshot.cn/docs)
-- [PostgreSQL 文档](https://www.postgresql.org/docs/)
-- [Agent 开发指南](../agent_development.md)
-- [数据库设置说明](../database/README.md)
+- [Core 模块文档](core/README.md) - 详细的 Core 模块使用说明
+- [Core 模块示例](core/example.py) - 可运行的示例代码
+- [配置模块文档](config/README.md) - 配置管理说明
+- [API 接口文档](config/API_INTERFACE.md) - 完整的 API 接口文档
+- [开发总结](../CORE_MODULE_COMPLETE.md) - Core 模块开发完成总结
+- [Agent 开发指南](../agent_development.md) - 完整的开发指南
+- [Kimi API 文档](https://platform.moonshot.cn/docs) - Moonshot AI API
+- [PostgreSQL 文档](https://www.postgresql.org/docs/) - 数据库文档
 
 ## 📄 许可证
 
@@ -275,7 +343,27 @@ python main.py
 
 欢迎提交 Issue 和 Pull Request！
 
+## 🎉 完成状态
+
+### ✅ 已完成的模块
+
+- [x] **Config 模块**: 数据库和 LLM 配置管理
+- [x] **Utils 模块**: 时间处理、日志、Prompt 构建
+- [x] **Prompts 模块**: 系统 Prompt、Few-shot 示例、Schema
+- [x] **Core 模块**: Agent 主控制器、SQL 生成器、SQL 执行器
+- [x] **主程序**: 交互式 CLI 界面
+- [x] **文档**: 完整的使用文档和示例
+
+### 🚀 可以开始使用！
+
+Core 模块已完成开发，系统已就绪，可以：
+1. 运行 10 个测试问题验证功能
+2. 通过 CLI 交互式查询
+3. 通过 Python API 集成到其他系统
+4. 查看流式输出观察 Agent 推理过程
+
 ---
 
-**开发状态**: 准备就绪 ✅  
+**开发状态**: ✅ Core 模块开发完成  
+**版本**: v0.1.0  
 **最后更新**: 2026-01-25
