@@ -491,7 +491,21 @@ class SQLGenerator:
                 pass
         
         # 方法 4: 尝试修复常见的 JSON 格式问题
-        # 例如：多余的逗号、单引号等
+        # 例如：缺少结尾的大括号（通常是由于 truncation 引起）
+        if first_brace != -1 and last_brace == -1:
+            json_text = text[first_brace:] + "}"
+            try:
+                return json.loads(json_text)
+            except json.JSONDecodeError:
+                # 尝试进一步修复：如果里面有未闭合的引号
+                if json_text.count('"') % 2 != 0:
+                    json_text = json_text[:-1] + '"}'
+                    try:
+                        return json.loads(json_text)
+                    except json.JSONDecodeError:
+                        pass
+        
+        # 方法 5: 替换单引号为双引号（简单处理）
         if first_brace != -1 and last_brace != -1:
             json_text = text[first_brace:last_brace + 1]
             # 替换单引号为双引号（简单处理）

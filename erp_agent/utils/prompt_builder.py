@@ -181,13 +181,40 @@ class PromptBuilder:
                         row_count = result.get('row_count', 0)
                         history_context += f"**执行结果**: 成功,返回 {row_count} 行\n"
                         
-                        # 显示部分数据(最多显示前5行)
+                        # 显示数据（根据数据量决定显示多少行）
                         if result.get('data'):
-                            data = result['data'][:5]
-                            history_context += f"```\n{data}\n```\n\n"
+                            data = result['data']
+                            # 动态决定显示多少行：
+                            # - 50行以内：全部显示（提高数据完整性）
+                            # - 50行以上：显示前30行和后10行，中间省略
+                            if row_count <= 50:
+                                # 全部显示
+                                import json
+                                history_context += f"```json\n{json.dumps(data, ensure_ascii=False, default=str, indent=2)}\n```\n\n"
+                            else:
+                                # 显示前30行和后10行
+                                import json
+                                sample_data = data[:30] + ['...省略中间数据...'] + data[-10:]
+                                history_context += f"```json\n{json.dumps(sample_data, ensure_ascii=False, default=str, indent=2)}\n```\n"
+                                history_context += f"（共 {row_count} 行，上面显示了前30行和后10行）\n\n"
                     else:
                         error = result.get('error', '未知错误')
-                        history_context += f"**执行结果**: 失败\n**错误信息**: {error}\n\n"
+                        history_context += f"**执行结果**: 失败\n**错误信息**: {error}\n"
+                        
+                        # 【关键改进】如果有验证反馈，优先显示
+                        if 'validation_feedback' in item:
+                            history_context += f"\n**验证反馈**:\n{item['validation_feedback']}\n"
+                        
+                        # 【架构优化】如果有智能错误分析，添加诊断信息
+                        if 'error_analysis' in item:
+                            analysis = item['error_analysis']
+                            history_context += f"**错误诊断**: {analysis.get('diagnosis', '')}\n"
+                            history_context += f"**根本原因**: {analysis.get('root_cause', '')}\n"
+                            history_context += f"**修复策略**: {analysis.get('fix_strategy', '')}\n"
+                            if 'example' in analysis:
+                                history_context += f"\n**正确示例**:\n{analysis['example']}\n"
+                        
+                        history_context += "\n"
         
         # 构建错误反馈文本
         error_feedback_text = ""

@@ -37,13 +37,13 @@ class LLMConfig:
     model: str = "kimi-k2"
     temperature: float = 0.3
     max_tokens: int = 4096
-    timeout: int = 60
-    max_retries: int = 3
-    retry_delay: int = 2
+    timeout: int = 120  # 增加到120秒，应对复杂查询
+    max_retries: int = 5  # 增加重试次数
+    retry_delay: int = 5  # 增加重试间隔到5秒
     
     # SQL 生成专用配置
     sql_temperature: float = 0.1  # SQL 生成时使用更低的温度以提高确定性
-    sql_max_tokens: int = 2048
+    sql_max_tokens: int = 4096
     
     # 答案生成专用配置
     answer_temperature: float = 0.5  # 答案生成时允许更高的温度

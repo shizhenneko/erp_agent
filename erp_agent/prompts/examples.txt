@@ -628,6 +628,7 @@ Observation（观察）→ 分析查询结果、发现规律或异常
    - `DATE_TRUNC('month', date)`：日期截断到月份
    - `COALESCE(end_date, CURRENT_DATE)`：处理仍在用的设备
 4. **不用LIMIT**：这是异常检测，需要找出**所有**缺失记录
+5. **⚠️ 时间范围必须完整**：从设备安装日期(install_date)到当前日期的**整个期间**，绝不能简化为"只检查最近几个月"，因为缺失可能发生在任何历史时间点
 
 **Action（行动）**:
 ```json
@@ -662,6 +663,50 @@ Observation（观察）→ 分析查询结果、发现规律或异常
 - **DATE_TRUNC**：统一时间粒度（月、日、年）
 - **COALESCE**：处理NULL，提供默认值
 - **完整性检测不用LIMIT**：必须返回所有异常，不能截断
+- **⚠️ 时间范围完整性**：检查必须覆盖**整个应检查的时间段**（如从入职到当前），绝不能简化为"只检查最近几个月"
+
+### 应用到实际场景：员工工资拖欠检查
+
+如果实际问题是"检查是否有员工工资拖欠"，应用相同的模式：
+
+**错误做法**❌：
+```sql
+-- 只检查最近3个月（会漏掉历史拖欠）
+WHERE payment_date >= CURRENT_DATE - INTERVAL '3 months'
+```
+
+**正确做法**✅：
+```sql
+-- 检查员工整个在职期间
+WITH employee_months AS (
+    SELECT 
+        e.employee_id,
+        e.employee_name,
+        e.department_name,
+        generate_series(
+            DATE_TRUNC('month', e.hire_date),  -- 从入职开始
+            DATE_TRUNC('month', COALESCE(e.leave_date, CURRENT_DATE)),  -- 到离职或当前
+            '1 month'::interval
+        )::DATE as month
+    FROM employees e
+)
+SELECT 
+    em.employee_id,
+    em.employee_name,
+    TO_CHAR(em.month, 'YYYY-MM') AS missing_salary_month
+FROM employee_months em
+LEFT JOIN salaries s ON em.employee_id = s.employee_id 
+    AND DATE_TRUNC('month', s.payment_date) = em.month
+WHERE s.salary_id IS NULL
+    AND em.month < DATE_TRUNC('month', CURRENT_DATE)  -- 排除本月
+ORDER BY em.month DESC, em.employee_id;
+```
+
+**关键点**：
+1. 时间范围：从`hire_date`到`COALESCE(leave_date, CURRENT_DATE)`，覆盖整个在职期间
+2. 不设置"最近N个月"的限制，因为历史拖欠也需要发现
+3. 使用`COALESCE`处理在职员工（leave_date为NULL）
+4. 排除当前进行中的月份（因为可能还未到发薪日）
 
 ---
 

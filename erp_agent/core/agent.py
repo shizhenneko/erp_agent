@@ -16,6 +16,7 @@ from erp_agent.config.database import DatabaseConfig
 from erp_agent.core.sql_generator import SQLGenerator
 from erp_agent.core.sql_executor import SQLExecutor
 from erp_agent.core.result_analyzer import ResultAnalyzer
+from erp_agent.core.sql_validator import SQLValidator
 from erp_agent.utils.prompt_builder import PromptBuilder
 from erp_agent.utils.date_utils import get_current_datetime
 from erp_agent.utils.logger import (
@@ -107,6 +108,9 @@ class ERPAgent:
         self.sql_executor = SQLExecutor(db_config)
         self.result_analyzer = ResultAnalyzer(llm_config)  # 使用 LLM 驱动的结果分析器
         
+        # 新增：架构层面的优化组件
+        self.sql_validator = SQLValidator()  # SQL 验证器
+        
         self.logger.info("ERP Agent 已初始化")
         self.logger.info(f"最大迭代次数: {self.agent_config.max_iterations}")
     
@@ -196,6 +200,44 @@ class ERPAgent:
                         self.logger.error("action 是 execute_sql 但缺少 sql")
                         continue
                     
+                    # 【调试日志】显示完整的SQL
+                    self.logger.debug(f"生成的完整SQL:\n{sql}")
+                    
+                    # 【架构优化】在执行前验证SQL
+                    validation_result = self.sql_validator.validate(sql)
+                    if not validation_result.is_valid:
+                        self.logger.warning(
+                            f"SQL验证失败: {validation_result.error_message}"
+                        )
+                        self.logger.info(f"修复建议: {validation_result.suggestion}")
+                        # 【重要】记录完整的SQL以便调试
+                        self.logger.info(f"被拒绝的SQL: {sql}")
+                        
+                        # 构建智能错误反馈，让LLM重新生成
+                        # 【关键改进】明确显示被拒绝的SQL，让agent能看到自己生成了什么
+                        error_feedback = (
+                            f"你生成的SQL未通过验证检查:\n"
+                            f"SQL: {sql}\n\n"
+                            f"验证失败原因: {validation_result.error_message}\n"
+                            f"修复建议: {validation_result.suggestion}\n\n"
+                            f"请仔细检查SQL语法，重新生成正确的SQL。"
+                        )
+                        
+                        # 记录到上下文
+                        state.context.append({
+                            'iteration': state.iteration,
+                            'thought': thought,
+                            'action': action,
+                            'sql': sql,
+                            'result': {
+                                'success': False,
+                                'error': f"SQL验证失败: {validation_result.error_message}"
+                            },
+                            'validation_feedback': error_feedback
+                        })
+                        
+                        continue  # 跳过执行，进入下一轮迭代
+                    
                     self.logger.info(f"执行 SQL: {sql[:200]}...")
                     
                     exec_result = self.sql_executor.execute(sql)
@@ -209,33 +251,125 @@ class ERPAgent:
                         'result': exec_result
                     })
                     
-                    # 分析查询结果（辅助判断）
-                    result_analysis = self.result_analyzer.analyze_result(
-                        exec_result, user_question, state.context
-                    )
-                    
                     # 记录迭代日志
                     result_summary = self._summarize_result(exec_result)
-                    log_agent_iteration(
-                        iteration=state.iteration,
-                        user_question=user_question,
-                        sql=sql,
-                        result_summary=result_summary,
-                        next_action="继续迭代"
-                    )
                     
-                    # 记录分析结果（用于调试）
-                    if result_analysis.get('is_sufficient'):
-                        self.logger.info(
-                            f"结果分析: 完整性 {result_analysis['completeness']:.2f}, "
-                            f"建议: {result_analysis['suggestion']}"
-                        )
-                    
-                    # 如果执行失败，记录错误但继续下一轮（让 LLM 修正）
+                    # 如果执行失败，使用智能错误分析（架构优化）
                     if not exec_result['success']:
-                        self.logger.warning(
-                            f"SQL 执行失败: {exec_result['error']}，将在下一轮重试"
+                        # 使用SQL验证器分析执行错误
+                        error_analysis = self.sql_validator.analyze_execution_error(
+                            sql, exec_result['error']
                         )
+                        
+                        self.logger.warning(
+                            f"SQL 执行失败: {exec_result['error']}"
+                        )
+                        self.logger.info(
+                            f"错误分析 - 类型: {error_analysis['error_type']}, "
+                            f"诊断: {error_analysis['diagnosis']}"
+                        )
+                        self.logger.info(f"修复策略: {error_analysis['fix_strategy']}")
+                        
+                        # 将智能分析结果添加到上下文中，帮助LLM修正
+                        state.context[-1]['error_analysis'] = error_analysis
+                        
+                        log_agent_iteration(
+                            iteration=state.iteration,
+                            user_question=user_question,
+                            sql=sql,
+                            result_summary=result_summary,
+                            next_action=f"重试（{error_analysis['error_type']}）"
+                        )
+                    else:
+                        # SQL执行成功，使用 LLM 驱动的结果分析器判断是否充分
+                        self.logger.info(
+                            f"SQL执行成功，返回 {exec_result['row_count']} 行数据，"
+                            f"正在分析结果..."
+                        )
+                        
+                        try:
+                            # 【架构说明】数据流动：
+                            # 1. analyze_result: 基于采样数据快速判断是否充分
+                            # 2. generate_final_answer: 基于完整数据生成答案
+                            # 这样既保证了分析效率，又保证了答案完整性
+                            
+                            # 深度分析当前结果（内部会采样用于快速判断）
+                            analysis = self.result_analyzer.analyze_result(
+                                sql_result=exec_result,
+                                user_question=user_question,
+                                context=state.context[:-1]  # 排除当前轮次
+                            )
+                            
+                            self.logger.info(
+                                f"结果分析: 完整性 {analysis['completeness']:.2f}, "
+                                f"建议: {analysis['suggestion']}"
+                            )
+                            
+                            if analysis['next_action'] == 'generate_answer':
+                                # 信息已充分，生成最终答案
+                                self.logger.info("信息已充分，基于完整数据生成最终答案...")
+                                
+                                # 【关键】传递完整exec_result，答案生成器会尽可能使用完整数据
+                                # 对于列举类、异常检测类问题，会提供≤500行的完整数据
+                                final_answer = self.result_analyzer.generate_final_answer_from_full_result(
+                                    sql_result=exec_result,  # 完整SQL查询结果
+                                    user_question=user_question,
+                                    sql_query=sql,
+                                    context=state.context[:-1]
+                                )
+                                
+                                state.final_answer = final_answer
+                                state.success = True
+                                
+                                log_agent_iteration(
+                                    iteration=state.iteration,
+                                    user_question=user_question,
+                                    sql=sql,
+                                    result_summary=result_summary,
+                                    next_action="完成（独立LLM生成答案）"
+                                )
+                                
+                                # 更新上下文
+                                state.context[-1]['final_answer'] = final_answer
+                                break
+                            else:
+                                # 信息不充分，继续迭代
+                                next_action_str = "继续迭代" if analysis['next_action'] == 'continue_query' else "重试（查询修正）"
+                                self.logger.info(f"信息不充分，根据分析建议: {analysis['next_action']}")
+                                
+                                log_agent_iteration(
+                                    iteration=state.iteration,
+                                    user_question=user_question,
+                                    sql=sql,
+                                    result_summary=result_summary,
+                                    next_action=f"{next_action_str}: {analysis['suggestion']}"
+                                )
+                                # 继续下一轮循环
+                                
+                        except Exception as e:
+                            self.logger.error(f"结果分析失败: {e}")
+                            # 降级逻辑：如果分析器失败，且已有数据，尝试生成答案
+                            if exec_result['row_count'] > 0:
+                                self.logger.info("分析器失败，但有数据，降级生成最终答案")
+                                # ... 现有生成逻辑 ...
+                                final_answer = self.result_analyzer.generate_final_answer_from_full_result(
+                                    sql_result=exec_result,
+                                    user_question=user_question,
+                                    sql_query=sql,
+                                    context=state.context[:-1]
+                                )
+                                state.final_answer = final_answer
+                                state.success = True
+                                break
+                            else:
+                                # 无数据且分析失败，继续迭代
+                                log_agent_iteration(
+                                    iteration=state.iteration,
+                                    user_question=user_question,
+                                    sql=sql,
+                                    result_summary=result_summary,
+                                    next_action="继续迭代（分析失败）"
+                                )
                 
                 elif action == 'answer':
                     # 给出最终答案
@@ -455,19 +589,85 @@ class ERPAgent:
                         'result': exec_result
                     })
                     
-                    # 分析查询结果（辅助判断）
-                    result_analysis = self.result_analyzer.analyze_result(
-                        exec_result, user_question, state.context
-                    )
-                    
-                    # 可以选择性地输出分析结果
-                    if result_analysis.get('is_sufficient'):
+                    # 如果SQL执行成功，使用分析器判断是否充分
+                    if exec_result['success']:
                         yield {
-                            'type': 'analysis',
+                            'type': 'analyzing_result',
                             'iteration': state.iteration,
-                            'analysis': result_analysis,
+                            'message': '正在分析查询结果是否充分...',
                             'timestamp': time.time()
                         }
+                        
+                        try:
+                            # 【架构说明】深度分析（基于采样判断充分性）
+                            analysis = self.result_analyzer.analyze_result(
+                                sql_result=exec_result,
+                                user_question=user_question,
+                                context=state.context[:-1]
+                            )
+                            
+                            if analysis['next_action'] == 'generate_answer':
+                                yield {
+                                    'type': 'generating_answer',
+                                    'iteration': state.iteration,
+                                    'message': '信息已充分，正在基于完整数据生成最终答案...',
+                                    'timestamp': time.time()
+                                }
+                                
+                                # 【关键】信息已充分，基于完整数据生成最终答案
+                                final_answer = self.result_analyzer.generate_final_answer_from_full_result(
+                                    sql_result=exec_result,  # 完整SQL查询结果
+                                    user_question=user_question,
+                                    sql_query=sql,
+                                    context=state.context[:-1]
+                                )
+                                
+                                state.final_answer = final_answer
+                                state.success = True
+                                
+                                yield {
+                                    'type': 'answer',
+                                    'iteration': state.iteration,
+                                    'answer': final_answer,
+                                    'timestamp': time.time()
+                                }
+                                
+                                # 更新上下文
+                                state.context[-1]['final_answer'] = final_answer
+                                
+                                # 成功生成答案，退出循环
+                                break
+                            else:
+                                # 信息不充分，继续迭代
+                                yield {
+                                    'type': 'continue_iteration',
+                                    'iteration': state.iteration,
+                                    'suggestion': analysis['suggestion'],
+                                    'timestamp': time.time()
+                                }
+                                # 继续下一轮循环
+                                
+                        except Exception as e:
+                            self.logger.error(f"分析或生成失败: {e}")
+                            if exec_result['row_count'] > 0:
+                                # 降级逻辑
+                                final_answer = self.result_analyzer.generate_final_answer_from_full_result(
+                                    sql_result=exec_result,
+                                    user_question=user_question,
+                                    sql_query=sql,
+                                    context=state.context[:-1]
+                                )
+                                state.final_answer = final_answer
+                                state.success = True
+                                yield {
+                                    'type': 'answer',
+                                    'iteration': state.iteration,
+                                    'answer': final_answer,
+                                    'timestamp': time.time()
+                                }
+                                break
+                    # 如果SQL执行失败，继续下一轮让agent修正
+                    # 如果SQL执行失败，继续下一轮让agent修正
                 
                 elif action == 'answer':
                     answer = gen_result.get('answer', '')

@@ -14,6 +14,7 @@ from decimal import Decimal
 from datetime import datetime, date
 from typing import Dict, List, Any, Optional, Tuple
 from erp_agent.utils.logger import get_logger, log_api_call
+from erp_agent.utils.date_utils import get_current_datetime
 from erp_agent.config.llm import LLMConfig
 
 
@@ -194,7 +195,10 @@ class ResultAnalyzer:
         context: Optional[List[Dict[str, Any]]] = None
     ) -> str:
         """
-        构建结果分析的 prompt
+        构建结果分析的 prompt（用于判断是否充分）
+        
+        【架构优化】此方法只用于判断结果是否充分，可以使用采样数据
+        实际答案生成会使用完整数据，在generate_final_answer_from_full_result中处理
         
         参数:
             sql_result: SQL 执行结果
@@ -207,8 +211,9 @@ class ResultAnalyzer:
         data = sql_result.get('data', [])
         row_count = sql_result.get('row_count', 0)
         
-        # 限制数据量，避免 prompt 过长
-        sample_data = data[:10] if len(data) > 10 else data
+        # 【关键改进】对于判断充分性，采样是合理的
+        # 但要确保采样足够代表性，并明确告知LLM这只是用于判断充分性
+        sample_data = data[:50] if len(data) > 50 else data
         
         # 转换为 JSON 可序列化格式
         sample_data = self._serialize_data(sample_data)
@@ -226,14 +231,29 @@ class ResultAnalyzer:
                     context_str += f"结果行数: {ctx['result'].get('row_count', 0)}\n"
         
         # 构建完整 prompt
-        prompt = f"""你是一个数据分析专家，请分析以下 SQL 查询结果是否充分回答了用户的问题。
+        prompt = f"""你是一个数据分析专家，请根据用户问题和当前的查询结果，分析是否已经获得了足够的信息来回答该问题。
+
+### 重要说明
+⚠️ **本次分析的目的**：判断当前SQL查询结果是否已经充分回答了用户的问题
+⚠️ **数据采样说明**：为了快速判断，下方显示的是数据样本（前50行）。但如果判断为充分，后续会使用**完整数据**生成最终答案，所以请放心判断。
+
+### 判断原则
+1. **基于问题类型判断**：
+   - 统计类问题（如"有多少"、"总数"）：通常一次查询就够
+   - 列举类问题（如"有哪些"、"列出所有"）：如果数据完整，一次查询就够
+   - 比较类问题（如"哪个更高"）：可能需要多次查询
+   - 异常检测问题（如"有没有拖欠"）：如果已查到异常或确认无异常，就够了
+
+2. **对照原问题**：数据是否覆盖了问题的所有方面？
+
+3. **数据质量**：数据是否存在明显错误或异常？
 
 ## 用户问题
 {user_question}
 
-## 查询结果
-- 返回行数: {row_count} 行
-- 数据样本（最多显示10行）:
+## 当前查询结果
+- 实际总行数: {row_count} 行
+- 数据样本（用于判断充分性）:
 ```json
 {json.dumps(sample_data, ensure_ascii=False, indent=2)}
 ```
@@ -244,45 +264,29 @@ class ResultAnalyzer:
 请从以下几个维度分析这个查询结果：
 
 1. **完整性评分** (0-1分)：这个结果在多大程度上回答了用户的问题？
-   - 1.0 表示完全回答了问题
-   - 0.5 表示部分回答，还需要更多信息
-   - 0.0 表示完全没有回答问题
 
-2. **是否充分** (true/false)：这个结果是否足够生成最终答案？
-   - true: 可以基于这个结果生成完整的自然语言答案
-   - false: 需要继续查询或补充信息
+2. **是否充分** (true/false)：这个结果是否已经**完全足够**回答问题？
+   - true: 数据已经完全覆盖了问题核心需求，可以生成答案（即使需要列举很多项，后续会用完整数据）
+   - false: 还需要进一步查询
 
-3. **关键发现** (列表)：从结果中提取3-5个关键发现或洞察
-   - 例如：数据规模、数值范围、趋势、异常等
+3. **关键发现** (列表)：从结果中提取的关键发现
 
-4. **异常情况** (列表)：识别数据中的异常或需要注意的情况
-   - 例如：大量NULL值、异常数值、数据缺失等
-   - 如果没有异常，返回空列表
+4. **异常情况** (列表)：识别数据中的异常或问题
 
-5. **建议** (文本)：给出下一步建议
-   - 如果结果充分，建议如何生成答案
-   - 如果不充分，建议需要什么额外信息
+5. **建议** (文本)：下一步建议
 
 6. **下一步动作** (枚举)：
-   - "generate_answer": 可以生成最终答案
+   - "generate_answer": 信息充分，生成答案（后续会用完整数据）
    - "continue_query": 需要继续查询
-   - "retry_query": 需要修正当前查询
+   - "retry_query": 当前查询有误，需要修正
 
 ## 输出格式
-请严格按照以下 JSON 格式输出（不要包含任何其他文本）：
-
 ```json
 {{
   "completeness": 0.85,
   "is_sufficient": true,
-  "key_findings": [
-    "发现1",
-    "发现2",
-    "发现3"
-  ],
-  "anomalies": [
-    "异常1（如有）"
-  ],
+  "key_findings": ["发现1", "发现2"],
+  "anomalies": [],
   "suggestion": "建议文本",
   "next_action": "generate_answer"
 }}
@@ -615,6 +619,253 @@ class ResultAnalyzer:
             # 降级到简单格式化
             return self._fallback_generate_answer(sql_result, user_question)
     
+    def generate_final_answer_from_full_result(
+        self,
+        sql_result: Dict[str, Any],
+        user_question: str,
+        sql_query: str,
+        context: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
+        """
+        从完整的SQL执行结果生成最终答案（新架构：独立的LLM负责分析）
+        
+        这个方法接收完整的SQL执行结果，智能处理数据量，避免硬编码和不合理截断。
+        LLM会根据问题类型和数据特征自动决定如何呈现答案。
+        
+        参数:
+            sql_result: SQL 执行结果（包含完整数据）
+            user_question: 用户的原始问题
+            sql_query: 执行的SQL查询
+            context: 历史查询上下文（可选）
+            
+        返回:
+            str: 自然语言答案
+        """
+        if not self.llm_config:
+            self.logger.warning("LLM 配置不可用，使用降级答案生成")
+            return self._fallback_generate_answer(sql_result, user_question)
+        
+        try:
+            # 构建智能prompt，传递完整或合理采样的数据
+            prompt = self._build_smart_answer_prompt(
+                sql_result, user_question, sql_query, context
+            )
+            
+            # 调用独立的LLM生成答案
+            answer = self._call_llm_for_answer(prompt)
+            
+            self.logger.info(f"独立LLM成功生成答案，长度: {len(answer)}")
+            
+            return answer
+            
+        except Exception as e:
+            self.logger.error(f"独立LLM答案生成失败: {e}")
+            import traceback
+            self.logger.debug(f"异常详情: {traceback.format_exc()}")
+            return self._fallback_generate_answer(sql_result, user_question)
+    
+    def _build_smart_answer_prompt(
+        self,
+        sql_result: Dict[str, Any],
+        user_question: str,
+        sql_query: str,
+        context: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
+        """
+        智能构建答案生成prompt（移除硬编码，智能处理数据）
+        
+        【关键架构改进】
+        - 此方法用于生成最终答案，必须使用完整数据或合理的完整采样
+        - 不再进行激进的截断，确保答案基于完整SQL查询结果
+        - 对于列举类问题，尽可能提供完整数据
+        
+        参数:
+            sql_result: SQL 执行结果（完整数据）
+            user_question: 用户问题
+            sql_query: SQL查询
+            context: 历史上下文
+            
+        返回:
+            str: 智能构建的 prompt
+        """
+        data = sql_result.get('data', [])
+        row_count = sql_result.get('row_count', 0)
+        columns = sql_result.get('columns', [])
+        
+        # 【关键改进】根据数据量智能决定采样策略
+        # 优先原则：尽可能提供完整数据，只在数据量极大时才合理采样
+        sample_data, sample_info = self._smart_sample_data_for_answer(
+            data, row_count
+        )
+        
+        # 转换为 JSON 可序列化格式
+        sample_data = self._serialize_data(sample_data)
+        
+        # 【关键修复】获取当前时间信息，确保LLM知道正确的时间
+        current_time_info = get_current_datetime()
+        current_date = current_time_info['current_date']
+        current_year = current_time_info['year']
+        current_month = current_time_info['month']
+        
+        # 构建上下文信息
+        context_str = ""
+        if context and len(context) > 0:
+            context_str = "\n\n## 历史查询上下文\n"
+            for i, ctx in enumerate(context[-2:], 1):  # 最近2次
+                if 'sql' in ctx and 'result' in ctx:
+                    context_str += f"\n### 之前的查询 {i}\n"
+                    context_str += f"SQL: {ctx['sql']}\n"
+                    context_str += f"结果行数: {ctx['result'].get('row_count', 0)}\n"
+        
+        prompt = f"""你是一个专业的数据分析助手。请基于SQL查询结果，用自然、专业的语言回答用户的问题。
+
+## ⚠️ 重要时间信息
+**当前日期**: {current_date}
+**当前年份**: {current_year} 年
+**当前月份**: {current_year} 年 {current_month} 月
+
+### 时间表达的理解原则
+当用户提到"今年"、"去年"等相对时间时：
+- **首先参考当前时间**: "今年" = {current_year} 年，"去年" = {current_year - 1} 年，"前年" = {current_year - 2} 年
+- **但必须基于实际数据**: 如果查询结果中没有某个年份的数据，应该：
+  1. 明确说明"数据库中暂无[该年份]的数据"或"截至目前，数据库中还没有[该年份]的记录"
+  2. **不要说"今年/去年没有XX"**，而应该说"根据现有数据"或"数据库中"
+  3. 如果数据库中只有历史年份的数据，应该基于实际数据年份回答，而不是强行对应"今年"、"去年"
+
+### 示例
+❌ 错误: "今年（2026 年）暂无新员工入职"
+✓ 正确: "根据现有数据，数据库中暂无 2026 年的入职记录。2025 年各部门入职情况如下..."
+
+❌ 错误: "去年没有任何销售"
+✓ 正确: "数据库中暂无 2025 年的销售记录，可能数据尚未录入"
+
+## 用户问题
+{user_question}
+
+## 执行的SQL查询
+```sql
+{sql_query}
+```
+
+## 查询结果（完整/接近完整数据）
+- 实际总行数: {row_count} 行
+- 列信息: {', '.join(columns)}
+{sample_info}
+
+⚠️ **重要说明**：
+- 下方提供的数据是SQL查询的完整结果（或已尽可能完整的采样）
+- 这不是用于判断的样本，而是用于生成最终答案的完整数据
+- 请基于这些数据直接生成答案，不要说"需要更多信息"
+- **特别注意**: 仔细查看数据中实际存在的年份，不要假设某个年份"没有数据"就是"没有发生"
+
+数据内容:
+```json
+{json.dumps(sample_data, ensure_ascii=False, indent=2)}
+```
+{context_str}
+
+## 回答要求
+
+1. **理解意图**：深入理解用户问题的真实意图
+
+2. **智能呈现**：
+   - **列举类问题**（如"哪些员工"、"有哪些异常"）：
+     * 如果数据≤20项，逐一列出所有项
+     * 如果数据21-100项，列出所有项或分组总结
+     * 如果数据>100项，列出前50项并说明"另外还有X项"
+   - **统计类问题**（如"有多少"、"总数"）：直接给出准确数字和简要说明
+   - **排名类问题**（如"前10名"）：必须列出所有请求的排名
+   - **异常检测问题**（如"有没有拖欠"）：逐一列出每个异常情况
+
+3. **数据准确性**：
+   - 给出准确的数字，保留合适的小数位
+   - 如果有NULL值或异常数据，适当说明
+   - 确保答案与数据完全一致，不要编造任何内容
+
+4. **自然流畅**：
+   - 使用自然、易懂的语言
+   - 避免过度技术化
+   - 适当使用表格、列表等格式化方式增强可读性
+
+5. **完整性处理**：
+   - 如果提供的是完整数据（≤500行），直接使用无需说明
+   - 如果数据被采样（>500行），在答案中自然说明："根据查询结果（前X行）..."
+
+请直接开始回答，用中文："""
+        
+        return prompt
+    
+    def _smart_sample_data(
+        self,
+        data: List[Dict[str, Any]],
+        row_count: int
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        智能数据采样策略（用于分析阶段判断充分性）
+        
+        【已弃用警告】此方法仅用于analyze_result的兼容性
+        答案生成应使用_smart_sample_data_for_answer
+        
+        参数:
+            data: 完整数据
+            row_count: 数据行数
+            
+        返回:
+            (采样数据, 采样说明信息)
+        """
+        # 对于分析阶段，50行样本就足够判断充分性
+        if row_count <= 50:
+            return data, "- 数据完整性: 完整数据（全部显示）"
+        else:
+            sample_data = data[:50]
+            return sample_data, f"- 数据完整性: 显示前50行样本（共{row_count}行，用于判断充分性）"
+    
+    def _smart_sample_data_for_answer(
+        self,
+        data: List[Dict[str, Any]],
+        row_count: int
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        智能数据采样策略（用于答案生成阶段）
+        
+        【关键架构改进】
+        - 此方法用于生成最终答案，优先提供完整数据
+        - 只在数据量极大时才进行合理采样
+        - 对于列举类、异常检测类问题，尽可能提供完整数据
+        
+        采样策略：
+        - ≤200行：完全返回（绝大多数查询都在此范围内）
+        - 201-500行：完全返回（对于列举类问题很重要）
+        - 501-1000行：返回前500行
+        - >1000行：返回前800行 + 后100行（了解数据分布）
+        
+        参数:
+            data: 完整数据
+            row_count: 数据行数
+            
+        返回:
+            (采样数据, 采样说明信息)
+        """
+        # 【通用策略】优先提供完整数据
+        if row_count <= 200:
+            # 200行以内，全部返回（覆盖绝大多数查询）
+            return data, "- 数据完整性: 完整数据（全部显示）"
+        
+        elif row_count <= 500:
+            # 500行以内，全部返回（对列举类问题很重要）
+            return data, f"- 数据完整性: 完整数据（共{row_count}行，全部显示）"
+        
+        elif row_count <= 1000:
+            # 1000行以内，返回前500行（已经很大了）
+            sample_data = data[:500]
+            return sample_data, f"- 数据完整性: 显示前500行（共{row_count}行）"
+        
+        else:
+            # 超过1000行，采用首尾采样
+            # 前800行 + 后100行，让LLM充分了解数据
+            sample_data = data[:800] + data[-100:]
+            return sample_data, f"- 数据完整性: 显示前800行和后100行（共{row_count}行）"
+    
     def _build_answer_generation_prompt(
         self,
         sql_result: Dict[str, Any],
@@ -622,7 +873,9 @@ class ResultAnalyzer:
         context: Optional[List[Dict[str, Any]]] = None
     ) -> str:
         """
-        构建答案生成的 prompt
+        构建答案生成的 prompt（保留用于向后兼容）
+        
+        注意：建议使用新的 generate_final_answer_from_full_result 方法
         
         参数:
             sql_result: SQL 执行结果
@@ -632,39 +885,13 @@ class ResultAnalyzer:
         返回:
             str: 完整的 prompt 文本
         """
-        data = sql_result.get('data', [])
-        row_count = sql_result.get('row_count', 0)
-        
-        # 限制数据量
-        sample_data = data[:20] if len(data) > 20 else data
-        
-        # 转换为 JSON 可序列化格式
-        sample_data = self._serialize_data(sample_data)
-        
-        prompt = f"""请基于以下查询结果，用自然、专业的语言回答用户的问题。
-
-## 用户问题
-{user_question}
-
-## 查询结果
-返回行数: {row_count} 行
-
-数据内容:
-```json
-{json.dumps(sample_data, ensure_ascii=False, indent=2)}
-```
-
-## 要求
-1. 直接回答用户的问题，语言自然流畅
-2. 如果有数值，给出准确的数字
-3. 如果有多行数据，进行合理的总结或列举
-4. 如果发现有趣的洞察或异常，可以提及
-5. 保持简洁，不要过度解释SQL或技术细节
-6. 使用中文回答
-
-请开始回答："""
-        
-        return prompt
+        # 使用新的智能prompt构建方法
+        return self._build_smart_answer_prompt(
+            sql_result, 
+            user_question, 
+            sql_result.get('sql', ''),  # 如果没有SQL，传空字符串
+            context
+        )
     
     def _call_llm_for_answer(self, prompt: str, retry_count: int = 0) -> str:
         """

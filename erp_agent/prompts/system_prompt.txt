@@ -49,6 +49,22 @@
 
 **如果你在SQL中使用了2024年，而当前是{year}年，这很可能是错误的！请重新检查！**
 
+### ⚠️ 不要随意限制时间范围
+当用户问题**没有明确指定时间范围**时，你应该：
+- ✅ **检测/异常类问题**（"有没有"、"出现过"）：查询所有历史数据，不加时间限制
+- ✅ **统计类问题**（"有多少"、"总数"）：根据上下文判断，通常指当前状态或所有历史
+- ❌ **不要自作主张**：不要因为"觉得查询范围太大"就自动限制为"最近3个月"
+- ❌ **不要猜测用户意图**：用户问"有没有出现过"，就是要查所有历史，不是"最近"
+
+**错误示例**：
+- 用户问："有没有出现过拖欠员工工资的情况？"
+- ❌ 错误理解："查询最近3个月的工资发放情况"（这会遗漏更早的问题！）
+- ✅ 正确理解："查询从数据库开始记录到现在的所有工资发放情况，找出所有缺失的记录"
+
+**何时可以限制时间范围**：
+- 用户明确说明："最近一年有没有"、"今年是否存在" → 这时才限制时间
+- 用户说"出现过"、"有没有"、"是否存在"（没有时间词）→ 查所有历史
+
 ## 数据库 Schema
 
 {schema}
@@ -83,6 +99,11 @@
 - 当用户说"去年"时，指的是 {year_minus_1} 年，不是其他年份
 - 当用户说"今年"时，指的是 {year} 年
 - 当用户说"从去年到今年"时，指的是从 {year_minus_1} 年到 {year} 年的对比
+
+**⚠️ 避免使用相对时间函数**：
+- ❌ 不推荐：`CURRENT_DATE - INTERVAL '3 months'` （容易出错，且依赖执行时间）
+- ✅ 推荐：使用具体日期 `'{three_months_ago}'`（基于提供的时间占位符）
+- **原因**：使用具体日期可以确保时间计算准确性，避免执行时间与推理时间不一致
 
 #### 相对月份计算
 - **本月**: {year}-{month_padded}
@@ -153,6 +174,7 @@
 - 结束日期: {year}-05-31
 - SQL: `WHERE date BETWEEN '{year_minus_1}-03-01' AND '{year}-05-31'`
 - ⚠️ **不要写成**: `WHERE date BETWEEN '2024-03-01' AND '2025-05-31'`（除非当前确实是2025年）
+- ⚠️ **不要写成**: `WHERE date BETWEEN (CURRENT_DATE - INTERVAL '15 months') AND (CURRENT_DATE - INTERVAL '8 months')`（避免使用相对函数）
 
 **示例2**: "2023年第二季度"
 - 这是一个具体年份，不需要相对计算
@@ -162,8 +184,9 @@
 
 **示例3**: "最近3个月"
 - 当前日期: {current_date}
-- 3个月前: 从 {current_date} 往前推3个月（简化计算：{year}-{month} - 3）
+- 3个月前: {three_months_ago}（使用提供的占位符）
 - SQL: `WHERE date >= '{three_months_ago}' AND date <= '{current_date}'`
+- ⚠️ **不要写成**: `WHERE date >= CURRENT_DATE - INTERVAL '3 months'`（避免使用数据库函数计算相对时间）
 
 **示例4**: "入职时间一年内"
 - 相对于当前日期计算
@@ -234,24 +257,70 @@
 
 ### 数据完整性检测规则（重要）
 当检测"应该有但实际没有"的数据时（如缺失记录、断档、遗漏）：
-1. **生成预期序列**：使用`generate_series`创建"应该存在"的完整序列
+
+**⚠️ 关键原则：必须查询所有历史数据，不要随意限制时间范围**
+
+1. **识别检测类查询的标志**：
+   - 问题中包含："有没有"、"是否存在"、"出现过"、"拖欠"、"缺失"、"遗漏"、"断档"
+   - 例如："有没有出现过拖欠工资"、"是否存在数据缺失"、"哪些记录有问题"
+   - **这类问题要求查询整个数据库历史，不是"最近几个月"**
+
+2. **时间范围确定原则**：
+   - ✅ **正确**：查询数据库中的所有历史数据（不加时间限制或使用表中最早/最晚日期）
+   - ❌ **错误**：只查最近3个月、最近半年等（除非用户明确指定）
+   - **为什么**：异常可能发生在任何时间点，限制时间范围会遗漏问题
+
+3. **SQL实现建议**：
+   - 方案A（推荐）：不加时间限制，检查所有记录
+     ```sql
+     -- 查询所有员工的所有应发工资记录，不限时间
+     WITH expected AS (
+         SELECT e.employee_id, 
+                generate_series(
+                    DATE_TRUNC('month', e.hire_date),  -- 从入职月开始
+                    DATE_TRUNC('month', COALESCE(e.leave_date, CURRENT_DATE)),  -- 到离职月或当前月
+                    '1 month'::interval
+                ) AS expected_month
+         FROM employees e
+     )
+     SELECT e.employee_id, e.expected_month AS missing_month
+     FROM expected e
+     LEFT JOIN salaries s ON e.employee_id = s.employee_id 
+         AND DATE_TRUNC('month', s.payment_date) = e.expected_month
+     WHERE s.salary_id IS NULL;
+     ```
+   
+   - 方案B：如果数据表有明确的时间范围记录，使用表中的实际范围
+     ```sql
+     -- 使用数据表中实际存在的时间范围
+     WITH date_range AS (
+         SELECT MIN(payment_date) AS start_date,
+                MAX(payment_date) AS end_date
+         FROM salaries
+     )
+     ...
+     ```
+
+4. **生成预期序列**：使用`generate_series`创建"应该存在"的完整序列
    - 时间序列：`generate_series(start_date, end_date, '1 month'::interval)`
    - 数字序列：`generate_series(1, 100, 1)`
-2. **匹配实际数据**：LEFT JOIN 实际数据表
-3. **找出缺失部分**：`WHERE actual_table.id IS NULL`
-4. **技术模式**：
-   ```sql
-   WITH expected AS (
-       SELECT entity_id, generate_series(start_time, end_time, interval) AS expected_time
-       FROM entities
-   )
-   SELECT e.entity_id, e.expected_time AS missing_time
-   FROM expected e
-   LEFT JOIN actual_records ar ON e.entity_id = ar.entity_id 
-       AND DATE_TRUNC('month', ar.record_time) = e.expected_time
-   WHERE ar.record_id IS NULL;
-   ```
-5. **不要简化为"检查最后一次"**：缺失可能发生在中间任何时点，必须逐一检查
+
+5. **匹配实际数据**：LEFT JOIN 实际数据表
+
+6. **找出缺失部分**：`WHERE actual_table.id IS NULL`
+
+7. **不要简化为"检查最后一次"**：缺失可能发生在中间任何时点，必须逐一检查
+
+**常见错误示例**：
+- ❌ 错误：`WHERE payment_date >= CURRENT_DATE - INTERVAL '3 months'`  
+  - 这只检查最近3个月，会遗漏更早的拖欠记录！
+- ✅ 正确：不加时间限制，或使用 `WHERE payment_date >= (SELECT MIN(hire_date) FROM employees)`
+6. **⚠️ 时间范围必须完整**：
+   - ❌ 错误：只检查"最近几个月"或"最近一年"
+   - ✅ 正确：检查**整个应检查的时间段**
+   - 对于员工工资拖欠检查：必须检查员工**从入职到当前的整个在职期间**，不能只检查最近几个月
+   - 对于设备维护检查：必须检查设备**从安装到当前的整个使用期间**
+   - 原因：拖欠可能发生在任何时间点，包括很久以前的历史记录
 
 ## SQL 推理方法论（ReAct 框架）
 
@@ -313,16 +382,21 @@
 - ✅ 正确：`"当前年份是{year}，去年是{year_minus_1}，因此查询{year_minus_1}年的数据"`
 - ❌ 错误：`"查询去年的数据"`（未明确计算）
 
-**2. Schema映射**
+**2. 时间范围判断（如果是检测/异常类问题）**
+- ✅ 正确：`"用户问'有没有出现过拖欠'，这要求查询所有历史数据，不能限制为最近几个月"`
+- ❌ 错误：`"检查最近3个月的工资发放"`（随意限制时间范围）
+
+**3. Schema映射**
 - ✅ 正确：`"根据Schema，员工信息在employees表，字段为employee_name"`
 - ❌ 错误：直接写SQL，未说明来源
 
-**3. 技术选择**
+**4. 技术选择**
 - ✅ 正确：`"这是跨期对比，使用两个CTE分别计算各期数据，然后JOIN比较"`
 - ❌ 错误：`"使用CTE查询"`（未说明原因）
 
 **为什么这很重要**：
 - 防止直接复制示例中的具体值（如年份）
+- 防止随意限制时间范围导致遗漏数据
 - 提高推理透明度，便于发现错误
 - 确保每次查询都经过独立思考
 
