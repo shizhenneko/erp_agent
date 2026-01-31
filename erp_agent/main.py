@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ERP Agent 主入口
-提供命令行交互界面
+ERP Agent WebSocket 服务
+提供 WebSocket 接口供前端调用
 """
 
 import os
 import sys
+import asyncio
+import json
 from pathlib import Path
+from typing import Dict, Any, Optional
+import time
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
 # 添加项目根目录到路径（erp_agent 文件夹的父目录）
 project_root = Path(__file__).parent.parent
@@ -17,49 +25,20 @@ sys.path.insert(0, str(project_root))
 os.chdir(str(project_root))
 
 
+# 全局 Agent 实例
+agent_instance = None
+
+
 def print_banner():
     """打印启动横幅"""
     banner = """
     ╔══════════════════════════════════════════════════════════════╗
-    ║                    ERP Agent v0.1.0                          ║
+    ║         ERP Agent WebSocket Service v0.1.0                   ║
     ║          基于 Kimi-K2 的智能数据查询助手                      ║
+    ║                    WebSocket API                               ║
     ╚══════════════════════════════════════════════════════════════╝
     """
     print(banner)
-
-
-def print_help():
-    """打印帮助信息"""
-    help_text = """
-    使用说明:
-    
-    1. 直接输入您的问题，Agent 将自动生成 SQL 并返回答案
-    2. 支持的查询类型：
-       - 简单统计: "有多少在职员工？"
-       - 部门分析: "每个部门有多少人？"
-       - 时间查询: "今年新入职了多少人？"
-       - 排名查询: "工资最高的前10名员工是谁？"
-       - 复杂分析: "有没有拖欠工资的情况？"
-    
-    3. 特殊命令:
-       - help   : 显示帮助信息
-       - test   : 运行10个测试问题
-       - stream : 切换流式/标准输出模式
-       - exit   : 退出程序（也可使用 quit 或 q）
-    
-    4. Agent 特性:
-       - 多轮 ReAct 推理：自动分析、查询、迭代
-       - 智能错误修正：SQL 错误自动重试
-       - 流式输出：实时查看推理过程
-       - 时间智能：自动处理"今年"、"去年"等表达
-    
-    示例问题:
-       > 有多少在职员工？
-       > 去年A部门的平均工资是多少？
-       > 工资最高的前10名员工是谁？
-       > 从去年到今年涨薪幅度最大的10位员工是谁？
-    """
-    print(help_text)
 
 
 def load_env():
@@ -67,10 +46,9 @@ def load_env():
     try:
         from dotenv import load_dotenv
         
-        # 尝试多个可能的.env文件位置
         env_paths = [
-            project_root / '.env',  # 项目根目录
-            Path(__file__).parent / '.env',  # erp_agent目录
+            project_root / '.env',
+            Path(__file__).parent / '.env',
         ]
         
         for env_path in env_paths:
@@ -79,7 +57,6 @@ def load_env():
                 print(f"✓ 已加载环境配置: {env_path}")
                 return True
         
-        # 如果没找到.env文件，检查是否有env.example
         env_example = Path(__file__).parent / 'env.example'
         if env_example.exists():
             print("⚠️  未找到 .env 文件")
@@ -96,9 +73,8 @@ def check_environment():
     """检查环境配置"""
     print("正在检查环境配置...")
     
-    # 检查必需的环境变量
     required_vars = [
-        'MOONSHOT_API_KEY',  # 更新为正确的环境变量名
+        'MOONSHOT_API_KEY',
         'DB_HOST',
         'DB_NAME',
         'DB_USER',
@@ -112,7 +88,7 @@ def check_environment():
     
     if missing_vars:
         print(f"❌ 缺少必需的环境变量: {', '.join(missing_vars)}")
-        print("请在 .env 文件中配置这些变量")
+        print("⚠️  请在 .env 文件中配置这些变量")
         return False
     
     print("✓ 环境变量配置完整")
@@ -152,188 +128,190 @@ def test_database_connection():
         return False
 
 
-def run_test_questions(agent):
-    """运行10个测试问题"""
-    print("\n" + "="*70)
-    print("运行测试问题集...")
-    print("="*70)
+def get_or_create_agent():
+    """获取或创建 Agent 实例（单例模式）"""
+    global agent_instance
+    
+    if agent_instance is None:
+        try:
+            from erp_agent.core import ERPAgent
+            from erp_agent.config import get_llm_config, get_database_config, get_agent_config
+            
+            llm_config = get_llm_config()
+            db_config = get_database_config()
+            agent_config = get_agent_config()
+            
+            agent_instance = ERPAgent(llm_config, db_config, agent_config)
+            print("✓ ERP Agent 初始化成功")
+        except Exception as e:
+            print(f"❌ ERPAgent 初始化失败: {e}")
+            raise
+    
+    return agent_instance
+
+
+def create_app():
+    """创建 FastAPI 应用"""
+    app = FastAPI(
+        title="ERP Agent WebSocket API",
+        version="0.1.0",
+        description="基于 ReAct 范式的智能数据查询助手"
+    )
+    
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    
+    return app
+
+
+app = create_app()
+
+
+@app.get("/")
+async def root():
+    """根路径"""
+    return {
+        "name": "ERP Agent WebSocket API",
+        "version": "0.1.0",
+        "description": "基于 ReAct 范式的智能数据查询助手",
+        "endpoints": {
+            "websocket": "/ws"
+        }
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """健康检查"""
+    try:
+        agent = get_or_create_agent()
+        return {
+            "status": "healthy",
+            "agent_initialized": agent is not None,
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": time.time()
+        }
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket 端点"""
+    await websocket.accept()
+    
+    client_id = id(websocket)
+    print(f"[{client_id}] 客户端已连接")
     
     try:
-        from erp_agent.tests.test_questions import TEST_QUESTIONS
+        agent = get_or_create_agent()
         
-        for i, test in enumerate(TEST_QUESTIONS, 1):
-            question = test['question']
-            print(f"\n问题 {i}/{len(TEST_QUESTIONS)}: {question}")
-            print("-" * 70)
-            
+        await websocket.send_json({
+            "type": "connected",
+            "message": "已连接到 ERP Agent 服务",
+            "timestamp": time.time()
+        })
+        
+        while True:
             try:
-                result = agent.query(question)
+                data = await websocket.receive_json()
+                action = data.get("action")
+                user_question = data.get("question")
                 
-                if result['success']:
-                    print(f"✓ 答案: {result['answer']}")
-                    print(f"  迭代次数: {result['iterations']}, 耗时: {result['total_time']:.2f}秒")
-                else:
-                    print(f"✗ 查询失败: {result.get('error', '未知错误')}")
+                if action == "query" and user_question:
+                    print(f"[{client_id}] 收到查询: {user_question[:50]}...")
                     
-            except Exception as e:
-                print(f"✗ 执行出错: {e}")
-                import traceback
-                traceback.print_exc()
-        
-        print("\n" + "="*70)
-        print("测试完成！")
-        print("="*70)
-        
-    except ImportError as e:
-        print(f"❌ 无法导入测试问题模块: {e}")
-        print("   请确保 erp_agent/tests/test_questions.py 文件存在")
+                    try:
+                        await websocket.send_json({
+                            "type": "start",
+                            "user_question": user_question,
+                            "timestamp": time.time()
+                        })
+                        
+                        for chunk in agent.query_stream(user_question):
+                            await websocket.send_json({
+                                "type": chunk['type'],
+                                "data": chunk,
+                                "timestamp": chunk.get('timestamp', time.time())
+                            })
+                            await asyncio.sleep(0.01)
+                        
+                    except Exception as e:
+                        print(f"[{client_id}] 查询处理错误: {e}")
+                        await websocket.send_json({
+                            "type": "error",
+                            "error": str(e),
+                            "timestamp": time.time()
+                        })
+                else:
+                    await websocket.send_json({
+                        "type!status": "error",
+                        "message": "无效的请求格式",
+                        "timestamp": time.time()
+                    })
+                    
+            except json.JSONDecodeError as e:
+                print(f"[{client_id}] JSON 解析错误: {e}")
+                await websocket.send_json({
+                    "type": "error",
+                    "error": "无效的 JSON 格式",
+                    "timestamp": time.time()
+                })
+                
+    except WebSocketDisconnect:
+        print(f"[{client_id}] 客户端断开连接")
     except Exception as e:
-        print(f"❌ 运行测试失败: {e}")
+        print(f"[{client_id}] WebSocket 错误: {e}")
         import traceback
         traceback.print_exc()
-
-
-def interactive_mode(agent, enable_stream=False):
-    """交互模式"""
-    mode_text = "流式模式" if enable_stream else "标准模式"
-    print(f"\n进入交互模式 - {mode_text}（输入 'help' 查看帮助，输入 'exit' 退出）\n")
-    
-    while True:
-        try:
-            question = input("\n> 请输入您的问题: ").strip()
-            
-            if not question:
-                continue
-            
-            # 处理特殊命令
-            if question.lower() in ['exit', 'quit', 'q']:
-                print("\n感谢使用 ERP Agent，再见！")
-                break
-            
-            elif question.lower() == 'help':
-                print_help()
-                continue
-            
-            elif question.lower() == 'test':
-                run_test_questions(agent)
-                continue
-            
-            elif question.lower() == 'stream':
-                enable_stream = not enable_stream
-                mode_text = "流式模式" if enable_stream else "标准模式"
-                print(f"\n已切换到 {mode_text}")
-                continue
-            
-            # 执行查询
-            print("\n正在处理您的问题...")
-            
-            if enable_stream:
-                # 流式输出
-                print()
-                for chunk in agent.query_stream(question):
-                    chunk_type = chunk['type']
-                    
-                    if chunk_type == 'iteration_start':
-                        print(f"\n[第 {chunk['iteration']} 轮]")
-                    
-                    elif chunk_type == 'thought':
-                        print(f"💭 思考: {chunk['thought']}")
-                    
-                    elif chunk_type == 'action':
-                        action_emoji = "⚙️" if chunk['action'] == 'execute_sql' else "💬"
-                        print(f"{action_emoji} 动作: {chunk['action']}")
-                    
-                    elif chunk_type == 'sql_executing':
-                        sql_preview = chunk['sql'][:100] + "..." if len(chunk['sql']) > 100 else chunk['sql']
-                        print(f"📊 执行 SQL: {sql_preview}")
-                    
-                    elif chunk_type == 'sql_result':
-                        result_data = chunk['result']
-                        if result_data['success']:
-                            print(f"✓ 查询成功，返回 {result_data['row_count']} 行")
-                        else:
-                            print(f"✗ 查询失败: {result_data['error']}")
-                    
-                    elif chunk_type == 'answer':
-                        print(f"\n💬 答案: {chunk['answer']}")
-                    
-                    elif chunk_type == 'final':
-                        print(f"\n{'='*60}")
-                        if chunk['success']:
-                            print(f"✓ 查询完成")
-                            print(f"   最终答案: {chunk['answer']}")
-                        else:
-                            print(f"✗ 查询失败: {chunk.get('error', '未知错误')}")
-                        print(f"   迭代次数: {chunk['iterations']}, 总耗时: {chunk['total_time']:.2f}秒")
-                        print(f"{'='*60}")
-                    
-                    elif chunk_type == 'error':
-                        print(f"✗ 错误: {chunk['error']}")
-            else:
-                # 标准输出
-                result = agent.query(question)
-                
-                print(f"\n{'='*60}")
-                if result['success']:
-                    print(f"✓ 答案: {result['answer']}")
-                    print(f"   迭代次数: {result['iterations']}, 总耗时: {result['total_time']:.2f}秒")
-                else:
-                    print(f"✗ 查询失败: {result.get('error', '未知错误')}")
-                print(f"{'='*60}")
-            
-        except KeyboardInterrupt:
-            print("\n\n中断操作，正在退出...")
-            break
-        except Exception as e:
-            print(f"\n❌ 发生错误: {e}")
-            import traceback
-            traceback.print_exc()
 
 
 def main():
     """主函数"""
     print_banner()
     
-    # 加载环境变量
     if not load_env():
         print("\n请先配置 .env 文件后再运行")
         return
     
-    # 检查环境
     if not check_environment():
         return
     
-    # 测试数据库连接
     if not test_database_connection():
         return
     
-    print("\n✓ 所有检查通过，准备就绪！\n")
+    print("\n✓ 所有检查通过，准备启动 WebSocket 服务！\n")
     
-    # 初始化 Agent
-    print("正在初始化 ERP Agent...")
     try:
-        from erp_agent.core import ERPAgent
-        from erp_agent.config import get_llm_config, get_database_config, get_agent_config
-        
-        llm_config = get_llm_config()
-        db_config = get_database_config()
-        agent_config = get_agent_config()
-        
-        agent = ERPAgent(llm_config, db_config, agent_config)
-        print("✓ ERP Agent 初始化成功\n")
-        
+        get_or_create_agent()
     except Exception as e:
-        print(f"❌ 初始化 Agent 失败: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"\n❌ Agent 初始化失败，无法启动服务: {e}")
         return
     
-    # 显示帮助
-    print_help()
+    print("="*70)
+    print("WebSocket 服务已启动！")
+    print("="*70)
+    print("服务地址: ws://0.0.0.0:8000/ws")
+    print("API 文档: http://0.0.0.0:8000/docs")
+    print("健康检查: http://0.0.0.0:8000/health")
+    print("="*70)
+    print("\n按 Ctrl+C 停止服务\n")
     
-    # 进入交互模式
-    interactive_mode(agent, enable_stream=False)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info"
+    )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
