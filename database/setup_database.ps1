@@ -7,8 +7,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
 # 配置参数
-$POSTGRES_USER = "postgres"
-$POSTGRES_PASSWORD = "050916"  # 请根据实际情况修改
+$POSTGRES_USER = "YOUR_POSTGRES_USER_NAME"
+$POSTGRES_PASSWORD = "PASSWORD"  # 请根据实际情况修改
 $DB_NAME = "erp_agent_db"
 
 # 检查 PostgreSQL 是否安装

@@ -4,7 +4,6 @@
 - **数据库名称**: erp_agent_db
 - **字符集**: UTF-8
 - **数据库系统**: PostgreSQL 14+
-- **时间范围**: 2021-01-01 至 2026-01-25
 
 ---
 
@@ -27,39 +26,11 @@
 | created_at       | TIMESTAMP      | DEFAULT CURRENT_TIMESTAMP | 记录创建时间                           |
 | updated_at       | TIMESTAMP      | DEFAULT CURRENT_TIMESTAMP | 记录更新时间                           |
 
-#### 重要业务规则
-
-1. **在职员工判断**: `leave_date IS NULL`
-2. **离职员工判断**: `leave_date IS NOT NULL`
-3. **离职日期约束**: 离职日期必须晚于或等于入职日期
-4. **职级范围**: 1-10级，数字越大职级越高
-5. **部门列表**: 公司目前有5个部门（A部门、B部门、C部门、D部门、E部门）
-
 #### 索引
 
 - `idx_employees_department` - 部门索引（加速按部门查询）
 - `idx_employees_hire_date` - 入职日期索引（加速时间范围查询）
 - `idx_employees_active` - 在职员工索引（仅索引 leave_date IS NULL 的记录）
-
-#### 示例数据
-
-```sql
--- 在职员工示例
-employee_id: 'EMP001'
-employee_name: '张伟'
-department_name: 'A部门'
-current_level: 5
-hire_date: '2021-03-15'
-leave_date: NULL
-
--- 离职员工示例
-employee_id: 'EMP022'
-employee_name: '邓超'
-department_name: 'A部门'
-current_level: 6
-hire_date: '2022-12-15'
-leave_date: '2024-06-15'
-```
 
 ---
 
@@ -77,52 +48,10 @@ leave_date: '2024-06-15'
 | salary_amount    | DECIMAL(10,2)    | NOT NULL, >= 0             | 工资金额（精确到分）                      |
 | created_at       | TIMESTAMP        | DEFAULT CURRENT_TIMESTAMP  | 记录创建时间                             |
 
-#### 重要业务规则
-
-1. **发薪日期**: 公司统一在每月25号发放工资
-2. **工资范围**: 
-   - 最低工资: ¥7,000（1级员工）
-   - 最高工资: ¥52,500+（10级员工）
-3. **唯一性约束**: 每个员工在同一个发薪日期只能有一条工资记录
-   - `UNIQUE(employee_id, payment_date)`
-4. **级联删除**: 当员工记录被删除时，相关工资记录也会被删除
-5. **工资记录时间范围**: 
-   - 从员工入职当月或次月开始记录
-   - 离职员工的工资记录到离职月份为止
-
 #### 索引
 
 - `idx_salaries_payment_date` - 发薪日期索引（加速时间范围查询）
 - `idx_salaries_employee_date` - 复合索引（员工ID + 发薪日期，加速关联查询）
-
-#### 工资计算说明
-
-1. **基础工资**（按职级）:
-   - 1级: ¥7,000
-   - 2级: ¥9,000
-   - 3级: ¥11,000
-   - 4级: ¥13,500
-   - 5级: ¥16,500
-   - 6级: ¥20,000
-   - 7级: ¥25,000
-   - 8级: ¥31,500
-   - 9级: ¥40,000
-   - 10级: ¥52,500
-
-2. **A部门工资系数**: A部门员工工资在基础工资上 +5%
-
-3. **年度涨薪**: 每年1月份固定涨薪7.5%
-
-4. **特殊涨薪**: 个别员工在某些月份可能有额外的涨薪调整
-
-#### 示例数据
-
-```sql
-salary_id: 12345
-employee_id: 'EMP001'
-payment_date: '2026-01-25'
-salary_amount: 18500.00
-```
 
 ---
 
@@ -140,73 +69,19 @@ employees (1) ←──────── (N) salaries
 
 ---
 
-## 数据规模概览
+## SQL 查询建议
 
-- **员工总数**: 约100人
-- **在职员工比例**: 约85%-90%
-- **部门数量**: 5个部门（A、B、C、D、E）
-- **职级范围**: 1-10级
-- **工资记录**: 每月25号发放，覆盖2021年至今
-- **数据时间跨度**: 2021-01-01 至 2026-01-25
-
----
-
-## 时间相关术语映射
-
-当用户使用时间相关词汇时，你需要自己计算对应的日期范围。以下是常见表达式的处理方法：
-
-### 相对年份表达
-| 用户表达 | 推理方法 | 日期范围计算 |
-|---------|---------|-------------|
-| 今年    | 使用当前年份 | YYYY-01-01 到 YYYY-12-31 |
-| 去年    | 当前年份 - 1 | (YYYY-1)-01-01 到 (YYYY-1)-12-31 |
-| 前年    | 当前年份 - 2 | (YYYY-2)-01-01 到 (YYYY-2)-12-31 |
-| 2023年  | 直接使用指定年份 | 2023-01-01 到 2023-12-31 |
-
-### 相对月份表达
-| 用户表达 | 推理方法 | 日期范围计算 |
-|---------|---------|-------------|
-| 今年3月  | 当前年份 + 指定月份 | YYYY-03-01 到 YYYY-03-31 |
-| 去年12月 | (当前年份-1) + 指定月份 | (YYYY-1)-12-01 到 (YYYY-1)-12-31 |
-| 本月    | 当前年月 | YYYY-MM-01 到 YYYY-MM-DD |
-| 上个月  | 当前月 - 1（跨年注意） | 见说明 |
-
-### 季度表达
-| 用户表达 | 推理方法 | 日期范围计算 |
-|---------|---------|-------------|
-| 今年第一季度 | 当前年份 Q1 | YYYY-01-01 到 YYYY-03-31 |
-| 去年第二季度 | (当前年份-1) Q2 | (YYYY-1)-04-01 到 (YYYY-1)-06-30 |
-| 2023年第二季度 | 指定年份 Q2 | 2023-04-01 到 2023-06-30 |
-
-### 相对时间区间
-| 用户表达 | 推理方法 | 计算说明 |
-|---------|---------|---------|
-| 最近N个月 | 当前日期往前推N个月 | 例如当前2026-01-25，最近3个月约为2025-10-25到2026-01-25 |
-| 最近一年 | 当前日期往前推365天 | date >= CURRENT_DATE - INTERVAL '365 days' |
-| 一年内 | 当前日期往前推12个月 | date >= CURRENT_DATE - INTERVAL '12 months' |
-| 一年到两年 | 当前日期往前推12-24个月 | date BETWEEN CURRENT_DATE - INTERVAL '24 months' AND CURRENT_DATE - INTERVAL '12 months' |
-
-### SQL 查询建议
-
-**推荐做法**：在 SQL 中使用计算好的具体日期
+**推荐做法**：在 SQL 中使用明确的日期范围或明确的时间提取条件
 ```sql
--- 好的做法：使用具体日期
-WHERE payment_date BETWEEN '2025-01-01' AND '2025-12-31'
-
--- 也可以：使用年份提取
-WHERE EXTRACT(YEAR FROM payment_date) = 2025
+WHERE payment_date BETWEEN 'YYYY-01-01' AND 'YYYY-12-31'
+WHERE EXTRACT(YEAR FROM payment_date) = YYYY
 ```
 
-**相对时间区间查询**：
+**相对时间区间查询**（仅当问题明确为相对时间时）：
 ```sql
--- 最近完整月份（上个月）的工资
-WHERE DATE_TRUNC('month', payment_date) = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')
-
--- 入职时间在一年内的员工
+WHERE payment_date >= CURRENT_DATE - INTERVAL '3 months'
 WHERE hire_date >= CURRENT_DATE - INTERVAL '1 year'
 ```
-
----
 
 ## PostgreSQL 特性说明
 
@@ -228,5 +103,4 @@ WHERE hire_date >= CURRENT_DATE - INTERVAL '1 year'
 
 ---
 
-**最后更新**: 2026-01-25
 **Schema 版本**: 1.0

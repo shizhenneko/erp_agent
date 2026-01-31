@@ -251,19 +251,14 @@ class ResultAnalyzer:
 ⚠️ **本次分析的目的**：判断当前SQL查询结果是否已经充分回答了用户的问题
 ⚠️ **数据采样说明**：为了快速判断，下方显示的是数据样本（前50行）。但如果判断为充分，后续会使用**完整数据**生成最终答案，所以请放心判断。
 
-### 判断原则
-1. **基于问题类型判断**：
-   - 统计类问题（如"有多少"、"总数"）：通常一次查询就够
-   - 列举类问题（如"有哪些"、"列出所有"）：如果数据完整，一次查询就够
-   - 比较类问题（如"哪个更高"）：可能需要多次查询
-   - 异常检测问题（如"有没有拖欠"）：如果已查到异常或确认无异常，就够了
-   - **时间对比问题**：如果查询已经覆盖了要求的时间范围（即使某些年份无数据），就够了
+        ### 判断原则
+        1. **对照原问题**：结果是否覆盖了问题中的关键维度/对象/时间范围？
+           - 如果问题涉及多个对象或多个时间段，当前结果是否已经覆盖？
+           - 某些对象/时间段返回空结果也是有效信息（说明该部分确实无数据）
 
-2. **对照原问题**：数据是否覆盖了问题的所有方面？
-   - 特别注意：如果问题要求对比多个时间段，查询应该尝试获取所有时间段的数据
-   - 即使某个时间段返回空结果，这也是有效的答案（说明该时段无数据）
+        2. **数据质量**：结果是否存在明显错误、字段缺失或异常值影响结论？
 
-3. **数据质量**：数据是否存在明显错误或异常？
+        3. **判断目标**：本次仅判断“是否足够回答问题”，不要基于样本生成具体结论
 
 ## 用户问题
 {user_question}
@@ -663,7 +658,7 @@ class ResultAnalyzer:
             return self._fallback_generate_answer(sql_result, user_question)
         
         try:
-            # 构建智能prompt，传递完整或合理采样的数据
+            # 构建智能prompt，传递完整数据
             prompt = self._build_smart_answer_prompt(
                 sql_result, user_question, sql_query, context
             )
@@ -689,12 +684,13 @@ class ResultAnalyzer:
         context: Optional[List[Dict[str, Any]]] = None
     ) -> str:
         """
-        智能构建答案生成prompt（移除硬编码，智能处理数据）
+        构建答案生成prompt（尽量完整、减少硬编码）
         
-        【关键架构改进】
-        - 此方法用于生成最终答案，必须使用完整数据或合理的完整采样
-        - 不再进行激进的截断，确保答案基于完整SQL查询结果
-        - 对于列举类问题，尽可能提供完整数据
+        【核心设计原则V2】
+        1. **完整数据**：传递完整SQL结果，避免信息删减
+        2. **少硬编码**：减少问题类型分类，让LLM自主理解
+        3. **零幻觉**：强调数据忠实性，逐行核对
+        4. **自主呈现**：让LLM根据数据特征决定呈现方式
         
         参数:
             sql_result: SQL 执行结果（完整数据）
@@ -703,36 +699,30 @@ class ResultAnalyzer:
             context: 历史上下文
             
         返回:
-            str: 智能构建的 prompt
+            str: 优化的 prompt
         """
         data = sql_result.get('data', [])
         row_count = sql_result.get('row_count', 0)
         columns = sql_result.get('columns', [])
         
-        # 【关键改进】根据数据量智能决定采样策略
-        # 优先原则：尽可能提供完整数据，只在数据量极大时才合理采样
-        sample_data, sample_info = self._smart_sample_data_for_answer(
-            data, row_count
-        )
+        # 【关键改进】尽量完整传递数据，避免信息丢失
+        # 将完整数据序列化为JSON格式
+        full_data = self._serialize_data(data)
+        data_for_answer, data_info = self._smart_sample_data_for_answer(full_data, row_count)
         
-        # 转换为 JSON 可序列化格式
-        sample_data = self._serialize_data(sample_data)
-        
-        # 【关键修复】获取当前时间信息，确保LLM知道正确的时间
+        # 获取当前时间信息
         current_time_info = get_current_datetime()
         current_date = current_time_info['current_date']
         current_year = current_time_info['year']
         current_month = current_time_info['month']
         
-        # 构建上下文信息
+        # 简化的上下文信息
         context_str = ""
         if context and len(context) > 0:
-            context_str = "\n\n## 历史查询上下文\n"
-            for i, ctx in enumerate(context[-2:], 1):  # 最近2次
+            context_str = "\n\n## 历史查询\n"
+            for i, ctx in enumerate(context[-2:], 1):
                 if 'sql' in ctx and 'result' in ctx:
-                    context_str += f"\n### 之前的查询 {i}\n"
-                    context_str += f"SQL: {ctx['sql']}\n"
-                    context_str += f"结果行数: {ctx['result'].get('row_count', 0)}\n"
+                    context_str += f"查询{i}: 返回 {ctx['result'].get('row_count', 0)} 行\n"
         
         prompt = f"""你是一个专业的数据分析助手。请基于SQL查询结果，用自然、专业的语言回答用户的问题。
 
@@ -759,25 +749,28 @@ class ResultAnalyzer:
 ## 用户问题
 {user_question}
 
-## 执行的SQL查询
+## SQL 查询（仅供理解，不要在回答中直接展示）
+如果用户明确要求查看SQL，请再展示；否则不要输出SQL文本。
 ```sql
 {sql_query}
 ```
 
-## 查询结果（完整/接近完整数据）
+## 查询结果（完整数据为准）
 - 实际总行数: {row_count} 行
 - 列信息: {', '.join(columns)}
-{sample_info}
+{data_info}
 
 ⚠️ **重要说明**：
-- 下方提供的数据是SQL查询的完整结果（或已尽可能完整的采样）
-- 这不是用于判断的样本，而是用于生成最终答案的完整数据
-- 请基于这些数据直接生成答案，不要说"需要更多信息"
+- 下方提供的数据是SQL查询的结果，请**严格以数据为准**
+- 这不是用于判断的样本，而是用于生成最终答案的数据
+- **避免过度简化**：当用户意图是“列出/罗列/有哪些/全部/名单/明细”等枚举型需求时，必须完整列出所有符合条件的对象
+- 当问题是概览/对比/结论型，才以自然语言总结为主，必要时用表格/列表提升可读性
+- 不要说"需要更多信息"
 - **特别注意**: 仔细查看数据中实际存在的年份，不要假设某个年份"没有数据"就是"没有发生"
 
 数据内容:
 ```json
-{json.dumps(sample_data, ensure_ascii=False, indent=2)}
+{json.dumps(data_for_answer, ensure_ascii=False, indent=2)}
 ```
 {context_str}
 
@@ -785,28 +778,36 @@ class ResultAnalyzer:
 
 1. **理解意图**：深入理解用户问题的真实意图
 
-2. **智能呈现**：
-   - **列举类问题**（如"哪些员工"、"有哪些异常"）：
-     * 如果数据≤20项，逐一列出所有项
-     * 如果数据21-100项，列出所有项或分组总结
-     * 如果数据>100项，列出前50项并说明"另外还有X项"
-   - **统计类问题**（如"有多少"、"总数"）：直接给出准确数字和简要说明
-   - **排名类问题**（如"前10名"）：必须列出所有请求的排名
-   - **异常检测问题**（如"有没有拖欠"）：逐一列出每个异常情况
+2. **呈现方式**：
+   - 根据问题意图组织答案，优先自然语言总结
+   - 若问题要求枚举对象（如“有哪些/列出/所有”等语义），必须完整列出并覆盖每一行
+   - 如需排序/排名，只能基于已提供的数据逐条核对
 
-3. **数据准确性**：
-   - 给出准确的数字，保留合适的小数位
-   - 如果有NULL值或异常数据，适当说明
-   - 确保答案与数据完全一致，不要编造任何内容
+3. **数据准确性（防止幻觉）**：
+   - ⚠️ **最重要原则**：严格基于提供的数据，不要编造、臆测或归纳任何内容
+   - 对于数字与金额，使用数据中的真实数值
+   - 如果存在NULL/异常值，直接说明
 
 4. **自然流畅**：
    - 使用自然、易懂的语言
    - 避免过度技术化
    - 适当使用表格、列表等格式化方式增强可读性
+   
+5. **并列处理（重要）**：
+   - 如果问题涉及比较、排名或“最高/最低/最多/最少”等语义，请先判断是否存在并列
+   - 若关键指标相同，必须**并列展示**所有并列对象，并明确说明“并列”
+   - 并列时不要只给出其中一人/一项
+6. **完整性处理**：
+   - 回答必须忠实于数据，不编造、不遗漏关键对象
 
-5. **完整性处理**：
-   - 如果提供的是完整数据（≤500行），直接使用无需说明
-   - 如果数据被采样（>500行），在答案中自然说明："根据查询结果（前X行）..."
+## ⚠️ 防止幻觉的检查清单
+
+在生成答案前，请自我检查：
+- [ ] 我是否严格基于提供的数据？
+- [ ] 如果需要排序/排名，我是否逐条核对了实际数值？
+- [ ] 我是否避免了错误的归纳或臆测？
+- [ ] 对于"前N名"的问题，我是否准确列出了第1到第N名（包括并列）？
+- [ ] 我是否注意到了数值的变化趋势？
 
 请直接开始回答，用中文："""
         
@@ -843,18 +844,12 @@ class ResultAnalyzer:
         row_count: int
     ) -> Tuple[List[Dict[str, Any]], str]:
         """
-        智能数据采样策略（用于答案生成阶段）
+        数据准备策略（用于答案生成阶段）
         
-        【关键架构改进】
-        - 此方法用于生成最终答案，优先提供完整数据
-        - 只在数据量极大时才进行合理采样
-        - 对于列举类、异常检测类问题，尽可能提供完整数据
-        
-        采样策略：
-        - ≤200行：完全返回（绝大多数查询都在此范围内）
-        - 201-500行：完全返回（对于列举类问题很重要）
-        - 501-1000行：返回前500行
-        - >1000行：返回前800行 + 后100行（了解数据分布）
+        【2026-01-31 改进】
+        核心原则：完整传递数据，避免信息丢失
+        - 不做行级采样或截断
+        - 仅提供说明文本，提示数据行数
         
         参数:
             data: 完整数据
@@ -863,25 +858,10 @@ class ResultAnalyzer:
         返回:
             (采样数据, 采样说明信息)
         """
-        # 【通用策略】优先提供完整数据
-        if row_count <= 200:
-            # 200行以内，全部返回（覆盖绝大多数查询）
-            return data, "- 数据完整性: 完整数据（全部显示）"
-        
-        elif row_count <= 500:
-            # 500行以内，全部返回（对列举类问题很重要）
-            return data, f"- 数据完整性: 完整数据（共{row_count}行，全部显示）"
-        
-        elif row_count <= 1000:
-            # 1000行以内，返回前500行（已经很大了）
-            sample_data = data[:500]
-            return sample_data, f"- 数据完整性: 显示前500行（共{row_count}行）"
-        
-        else:
-            # 超过1000行，采用首尾采样
-            # 前800行 + 后100行，让LLM充分了解数据
-            sample_data = data[:800] + data[-100:]
-            return sample_data, f"- 数据完整性: 显示前800行和后100行（共{row_count}行）"
+        if row_count <= 0:
+            return data, ""
+
+        return data, f"\n⚠️ 注意：数据共 {row_count} 行，已全部提供"
     
     def _build_answer_generation_prompt(
         self,
@@ -934,7 +914,7 @@ class ResultAnalyzer:
             'messages': [
                 {
                     'role': 'system',
-                    'content': '你是一个专业的数据分析助手，擅长将数据转化为清晰、易懂的自然语言答案。'
+                    'content': '你是一个专业的数据分析助手。必须严格基于提供的数据作答，禁止编造。请根据用户意图决定输出形态：若是枚举/名单/有哪些等需求，必须完整列出全部对象；若是概览/结论型问题，才以总结为主。'
                 },
                 {
                     'role': 'user',
@@ -1000,6 +980,29 @@ class ResultAnalyzer:
             )
             raise
     
+    def _append_full_data_to_answer(
+        self,
+        answer: str,
+        sql_result: Dict[str, Any]
+    ) -> str:
+        """
+        在答案末尾附加完整SQL结果，避免信息丢失。
+        """
+        data = sql_result.get('data', [])
+        row_count = sql_result.get('row_count', 0)
+        columns = sql_result.get('columns', [])
+        serialized_data = self._serialize_data(data)
+
+        result_block = (
+            "\n\n---\n"
+            f"完整SQL结果（共 {row_count} 行，列: {', '.join(columns)}）:\n"
+            "```json\n"
+            f"{json.dumps(serialized_data, ensure_ascii=False, indent=2)}\n"
+            "```"
+        )
+
+        return (answer or "") + result_block
+
     def _fallback_generate_answer(
         self,
         sql_result: Dict[str, Any],
@@ -1020,30 +1023,37 @@ class ResultAnalyzer:
         
         if not data:
             return "查询未返回任何结果。"
-        
+
+        def format_value(value: Any) -> str:
+            if isinstance(value, float):
+                text = f"{value:.2f}"
+                return text.rstrip('0').rstrip('.') if '.' in text else text
+            return str(value)
+
+        data = self._serialize_data(data)
+
         if row_count == 1:
             # 单行结果
             row = data[0]
             parts = []
             for col, val in row.items():
-                if val is not None:
-                    if isinstance(val, float):
-                        parts.append(f"{col}: {val:.2f}")
-                    else:
-                        parts.append(f"{col}: {val}")
-            return "查询结果：" + ", ".join(parts)
-        
-        elif row_count <= 10:
-            # 少量结果
-            result = f"查询返回 {row_count} 条记录：\n"
-            for i, row in enumerate(data, 1):
-                row_str = ", ".join([f"{k}: {v}" for k, v in row.items() if v is not None])
-                result += f"{i}. {row_str}\n"
-            return result.strip()
-        
-        else:
-            # 大量结果
-            return f"查询返回 {row_count} 条记录（数据量较大，建议查看详细结果）。"
+                if val is None:
+                    parts.append(f"{col}为空")
+                else:
+                    parts.append(f"{col}为{format_value(val)}")
+            return "查询结果：" + "，".join(parts)
+
+        # 多行结果：逐行自然语言列出
+        lines = [f"查询返回 {row_count} 条记录："]
+        for i, row in enumerate(data, 1):
+            parts = []
+            for col, val in row.items():
+                if val is None:
+                    parts.append(f"{col}为空")
+                else:
+                    parts.append(f"{col}为{format_value(val)}")
+            lines.append(f"{i}. " + "，".join(parts))
+        return "\n".join(lines)
     
     def should_continue_querying(
         self,

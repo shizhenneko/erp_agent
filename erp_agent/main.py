@@ -9,9 +9,12 @@ import os
 import sys
 from pathlib import Path
 
-# 添加项目根目录到路径
-project_root = Path(__file__).parent
+# 添加项目根目录到路径（erp_agent 文件夹的父目录）
+project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+# 设置当前工作目录为项目根目录
+os.chdir(str(project_root))
 
 
 def print_banner():
@@ -63,13 +66,27 @@ def load_env():
     """加载环境变量"""
     try:
         from dotenv import load_dotenv
-        env_path = project_root / '.env'
-        if env_path.exists():
-            load_dotenv(env_path)
-            return True
+        
+        # 尝试多个可能的.env文件位置
+        env_paths = [
+            project_root / '.env',  # 项目根目录
+            Path(__file__).parent / '.env',  # erp_agent目录
+        ]
+        
+        for env_path in env_paths:
+            if env_path.exists():
+                load_dotenv(env_path)
+                print(f"✓ 已加载环境配置: {env_path}")
+                return True
+        
+        # 如果没找到.env文件，检查是否有env.example
+        env_example = Path(__file__).parent / 'env.example'
+        if env_example.exists():
+            print("⚠️  未找到 .env 文件")
+            print(f"   请将 {env_example} 复制为 .env 并配置相关参数")
         else:
             print("⚠️  未找到 .env 文件，请从 .env.example 复制并配置")
-            return False
+        return False
     except ImportError:
         print("⚠️  未安装 python-dotenv，请运行: pip install python-dotenv")
         return False
@@ -142,7 +159,7 @@ def run_test_questions(agent):
     print("="*70)
     
     try:
-        from tests.test_questions import TEST_QUESTIONS
+        from erp_agent.tests.test_questions import TEST_QUESTIONS
         
         for i, test in enumerate(TEST_QUESTIONS, 1):
             question = test['question']
@@ -160,13 +177,20 @@ def run_test_questions(agent):
                     
             except Exception as e:
                 print(f"✗ 执行出错: {e}")
+                import traceback
+                traceback.print_exc()
         
         print("\n" + "="*70)
         print("测试完成！")
         print("="*70)
         
+    except ImportError as e:
+        print(f"❌ 无法导入测试问题模块: {e}")
+        print("   请确保 erp_agent/tests/test_questions.py 文件存在")
     except Exception as e:
         print(f"❌ 运行测试失败: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def interactive_mode(agent, enable_stream=False):
